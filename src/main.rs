@@ -3,7 +3,7 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 use walkdir::WalkDir;
 
 const SEVEN_Z: &[u8] = b"7z\xBC\xAF\x27\x1C";
@@ -58,6 +58,11 @@ impl Budget {
 }
 
 fn main() -> Result<()> {
+    if std::env::args_os().nth(1).is_none() {
+        Cli::command().print_help()?;
+        println!();
+        return Ok(());
+    }
     let cli = Cli::parse();
     if cli.max_depth == 0 {
         bail!("--max-depth 必须大于 0");

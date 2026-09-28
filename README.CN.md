@@ -14,6 +14,8 @@
 cargo build --release
 ```
 
+不带参数运行 `acgdp` 会显示完整命令帮助。
+
 解压文件：
 
 ```sh

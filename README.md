@@ -14,6 +14,8 @@ Rust 1.89 or newer is required to build:
 cargo build --release
 ```
 
+Run `acgdp` without arguments to display the full command help.
+
 Extract a file:
 
 ```sh
