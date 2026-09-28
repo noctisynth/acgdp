@@ -17,6 +17,6 @@
 
 ## 架构与发布
 
-CLI 由 `clap` 解析参数，`zip` 和 `sevenz-rust2` 处理对应格式，`unrar-ng` 处理 RAR。最外层使用临时目录作为事务边界。ZIP/7z 流式复制时限制字节数；RAR 依赖头部大小与事后核对。完整处理约束见 [归档处理设计](../../.agents/archive-design.md)。
+`cli` 模块管理参数和终端输出，`detect` 模块识别格式，`extract` 模块封装 ZIP、7z、RAR 后端及共用的安全检查，`app` 模块调度递归与最终交付。最外层使用临时目录作为事务边界。ZIP/7z 流式复制时限制字节数；RAR 依赖头部大小与事后核对。完整处理约束见 [归档处理设计](../../.agents/archive-design.md)。
 
 源代码采用 Apache-2.0；UnRAR 组件保持自身许可证。Semifold 管理 changeset、版本计划、crates.io 与 GitHub Release 工作流。发布实施细节见 [版本与发布](../../.agents/release.md)。
