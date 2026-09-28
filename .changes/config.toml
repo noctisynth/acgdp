@@ -12,6 +12,7 @@ refactor = "Refactors"
 [packages.acgdp]
 path = "."
 resolver = "rust"
+github-release = true
 
 [resolver.rust.pre-check]
 url = "https://crates.io/api/v1/crates/{{ package.name }}/{{ package.version }}"
