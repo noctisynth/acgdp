@@ -1,9 +1,10 @@
 use std::fs::{self, File};
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::io::{self, IsTerminal, Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use clap::{CommandFactory, Parser};
+use clap::builder::styling::{AnsiColor, Style, Styles};
+use clap::{ColorChoice, CommandFactory, FromArgMatches, Parser};
 use walkdir::WalkDir;
 
 const SEVEN_Z: &[u8] = b"7z\xBC\xAF\x27\x1C";
@@ -33,6 +34,9 @@ struct Cli {
     /// 所有层累计最多写出的 GiB 数
     #[arg(long, default_value_t = 20)]
     max_gib: u64,
+    /// 终端颜色
+    #[arg(long, value_enum, default_value_t = ColorChoice::Auto)]
+    color: ColorChoice,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -57,13 +61,72 @@ impl Budget {
     }
 }
 
-fn main() -> Result<()> {
+fn help_styles() -> Styles {
+    Styles::styled()
+        .header(AnsiColor::Cyan.on_default().bold())
+        .usage(AnsiColor::Cyan.on_default().bold())
+        .literal(AnsiColor::Green.on_default())
+        .placeholder(AnsiColor::Yellow.on_default())
+        .error(AnsiColor::Red.on_default().bold())
+}
+
+fn requested_color() -> ColorChoice {
+    let mut args = std::env::args_os().skip(1);
+    while let Some(arg) = args.next() {
+        let Some(arg) = arg.to_str() else { continue };
+        if arg == "--" {
+            break;
+        }
+        let value = if arg == "--color" {
+            args.next().and_then(|value| value.into_string().ok())
+        } else {
+            arg.strip_prefix("--color=").map(str::to_owned)
+        };
+        if let Some(value) = value {
+            return value.parse().unwrap_or(ColorChoice::Auto);
+        }
+    }
+    ColorChoice::Auto
+}
+
+fn terminal_color(choice: ColorChoice, terminal: bool) -> bool {
+    match choice {
+        ColorChoice::Always => true,
+        ColorChoice::Never => false,
+        ColorChoice::Auto => terminal && std::env::var_os("NO_COLOR").is_none(),
+    }
+}
+
+fn output_style(choice: ColorChoice, color: AnsiColor) -> Style {
+    if terminal_color(choice, io::stdout().is_terminal()) {
+        color.on_default().bold()
+    } else {
+        Style::new()
+    }
+}
+
+fn main() {
+    let choice = requested_color();
+    if let Err(error) = run(choice) {
+        let style = if terminal_color(choice, io::stderr().is_terminal()) {
+            AnsiColor::Red.on_default().bold()
+        } else {
+            Style::new()
+        };
+        eprintln!("{style}错误：{}{error:#}", style.render_reset());
+        std::process::exit(1);
+    }
+}
+
+fn run(color: ColorChoice) -> Result<()> {
+    let mut command = Cli::command().color(color).styles(help_styles());
     if std::env::args_os().nth(1).is_none() {
-        Cli::command().print_help()?;
+        command.print_help()?;
         println!();
         return Ok(());
     }
-    let cli = Cli::parse();
+    let matches = command.get_matches();
+    let cli = Cli::from_arg_matches(&matches)?;
     if cli.max_depth == 0 {
         bail!("--max-depth 必须大于 0");
     }
@@ -101,7 +164,12 @@ fn main() -> Result<()> {
         written: 0,
     };
     let format = detect_format(&input)?.context("输入文件未识别为 ZIP、7z 或 RAR")?;
-    println!("解压 {} ({format:?})", input.display());
+    let style = output_style(cli.color, AnsiColor::Cyan);
+    println!(
+        "{style}解压{} {} ({format:?})",
+        style.render_reset(),
+        input.display()
+    );
     extract_one(
         &input,
         staging.path(),
@@ -112,8 +180,10 @@ fn main() -> Result<()> {
     expand_nested(staging.path(), 1, &cli, password.as_deref(), &mut budget)?;
     fs::rename(staging.path(), &output)
         .with_context(|| format!("无法保存到 {}", output.display()))?;
+    let style = output_style(cli.color, AnsiColor::Green);
     println!(
-        "完成：{}（累计解压 {} 字节）",
+        "{style}完成：{}{}（累计解压 {} 字节）",
+        style.render_reset(),
         output.display(),
         budget.written
     );
@@ -152,7 +222,13 @@ fn expand_nested(
         let target = tempfile::Builder::new()
             .prefix(".acgdp-layer-")
             .tempdir_in(parent)?;
-        println!("第 {} 层：{} ({format:?})", depth + 1, file.display());
+        let style = output_style(cli.color, AnsiColor::Magenta);
+        println!(
+            "{style}第 {} 层：{} {} ({format:?})",
+            depth + 1,
+            style.render_reset(),
+            file.display()
+        );
         extract_one(&file, target.path(), format, password, budget)
             .with_context(|| format!("解压失败：{}", file.display()))?;
         expand_nested(target.path(), depth + 1, cli, password, budget)?;

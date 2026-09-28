@@ -28,9 +28,12 @@ By default, this creates `game.jpg.extracted` beside the input. The original `ga
 acgdp game.jpg -o ./game --ask-password
 acgdp game.jpg -p 'shared-password' --keep-intermediates
 acgdp game.jpg --max-depth 64 --max-gib 50
+acgdp game.jpg --color always
 ```
 
 `-p` is useful in scripts, but the password may appear in process arguments. Use `--ask-password` for interactive use. Unencrypted archives need no password.
+
+Help, extraction progress, and errors use color in a terminal. Set `--color always` to keep colors when redirecting output, or `--color never` to disable them; `auto` is the default.
 
 ## Behavior and limits
 

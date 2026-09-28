@@ -45,6 +45,16 @@ def run(*args):
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+for arguments, expected_color in (
+    ([], False),
+    (["--color", "always", "--help"], True),
+    (["--color", "never", "--help"], False),
+):
+    result = subprocess.run([str(ACGDP), *arguments], capture_output=True)
+    assert result.returncode == 0
+    assert (b"\x1b[" in result.stdout) == expected_color
+
+
 base = ROOT / "tests" / f".smoke-{uuid.uuid4().hex}"
 base.mkdir()
 try:
@@ -53,6 +63,10 @@ try:
     outer.write_bytes(make_zip({"inner.jpg": inner}))
 
     run(outer)
+    colored = subprocess.run([str(ACGDP), str(outer), "--color", "always", "-o", str(base / "colored")], capture_output=True)
+    assert colored.returncode == 0 and b"\x1b[" in colored.stdout
+    plain = subprocess.run([str(ACGDP), str(outer), "--color", "never", "-o", str(base / "plain")], capture_output=True)
+    assert plain.returncode == 0 and b"\x1b[" not in plain.stdout
     output = base / "outer.zip.extracted"
     assert outer.exists()
     assert not (output / "inner.jpg").exists()

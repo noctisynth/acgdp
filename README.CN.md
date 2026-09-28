@@ -28,9 +28,12 @@ acgdp game.jpg --ask-password
 acgdp game.jpg -o ./game --ask-password
 acgdp game.jpg -p 'shared-password' --keep-intermediates
 acgdp game.jpg --max-depth 64 --max-gib 50
+acgdp game.jpg --color always
 ```
 
 `-p` 便于脚本使用，但密码可能出现在进程参数中；手动运行建议用 `--ask-password`。如果文件没有加密，不需要提供密码。
+
+帮助、解压进度和错误提示在终端中会使用颜色。重定向输出时可用 `--color always` 强制保留颜色，或用 `--color never` 禁用颜色；默认为 `auto`。
 
 ## 行为与限制
 
