@@ -6,4 +6,4 @@
 
 生成的 GitHub Actions 工作流位于 `.github/workflows`：推送 `main` 时由 Semifold 准备发布 PR，发布 PR 合并后执行 crates.io 与 GitHub Release 发布。不要同时在本地手动执行相同版本的 `smif version` 或 `smif publish`。
 
-GitHub 远端是 `noctisynth/acgdp`，当前仓库为私有。公开发布前还需要确定仓库可见性、配置 `CARGO_REGISTRY_TOKEN`，并核对 GitHub Actions 权限与发布结果。仓库自身使用 Apache-2.0；RAR 后端包含另行授权的 UnRAR 代码，发布包应附带 [`THIRD_PARTY_LICENSES/UNRAR.txt`](../THIRD_PARTY_LICENSES/UNRAR.txt)。当前工作流未配置预编译二进制资产；GitHub Release 的版本记录与可下载的多平台程序是两项不同工作。
+GitHub 远端是公开的 `noctisynth/acgdp`。发布 crates.io 前还需要配置 `CARGO_REGISTRY_TOKEN`，并核对 GitHub Actions 权限与发布结果。仓库自身使用 Apache-2.0；RAR 后端包含另行授权的 UnRAR 代码，发布包应附带 [`THIRD_PARTY_LICENSES/UNRAR.txt`](../THIRD_PARTY_LICENSES/UNRAR.txt)。当前工作流未配置预编译二进制资产；GitHub Release 的版本记录与可下载的多平台程序是两项不同工作。

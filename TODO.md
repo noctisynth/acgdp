@@ -7,5 +7,5 @@
 - [ ] 用真实游戏样本验证分卷 RAR、RAR 加密文件头与不常见条目。
 - [ ] 为 GitHub Release 配置并验证多平台预编译二进制资产。
 - [x] 创建 `noctisynth/acgdp` 仓库并连接 GitHub 远端。
-- [ ] 仓库目前为私有；公开发布前确定公开可见性。
+- [x] 将 `noctisynth/acgdp` 仓库设为公开。
 - [ ] 配置 crates.io 令牌并完成首次发布演练。
