@@ -1,11 +1,11 @@
 use std::fs::{self, File};
 use std::io::{self, Read, Seek, SeekFrom};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 
 use super::{
-    Budget, ProgressCallback, copy_limited_with_progress, safe_path, volume::VolumeReader,
+    Budget, Progress, SevenZCallbacks, copy_limited_with_progress, safe_path, volume::VolumeReader,
 };
 
 pub(super) fn extract(
@@ -14,6 +14,7 @@ pub(super) fn extract(
     offset: u64,
     password: Option<&str>,
     budget: &Budget,
+    progress: &dyn Progress,
     on_file: &mut dyn FnMut(&Path) -> Result<()>,
 ) -> Result<()> {
     extract_with_progress(
@@ -22,8 +23,11 @@ pub(super) fn extract(
         offset,
         password,
         budget,
-        on_file,
-        &mut |_, _, _| Ok(()),
+        progress,
+        SevenZCallbacks {
+            on_file,
+            on_progress: &mut |_, _, _| Ok(()),
+        },
     )
 }
 
@@ -33,12 +37,30 @@ pub(super) fn extract_with_progress(
     offset: u64,
     password: Option<&str>,
     budget: &Budget,
-    on_file: &mut dyn FnMut(&Path) -> Result<()>,
-    on_progress: &mut ProgressCallback<'_>,
+    progress: &dyn Progress,
+    callbacks: SevenZCallbacks<'_>,
 ) -> Result<()> {
+    let SevenZCallbacks {
+        on_file,
+        on_progress,
+    } = callbacks;
     let reader = OffsetReader::new(VolumeReader::open(source)?, offset)?;
+    let pw = sevenz_rust2::Password::from(password.unwrap_or_default());
+    let mut archive = sevenz_rust2::ArchiveReader::new(reader, pw)
+        .context("7z 解压失败；若已加密，请提供密码")?;
+    if progress.is_visible() {
+        let total = archive
+            .archive()
+            .files
+            .iter()
+            .filter(|entry| !entry.is_directory())
+            .try_fold(0u64, |bytes, entry| bytes.checked_add(entry.size()));
+        if let Some(bytes) = total {
+            progress.set_total(bytes);
+        }
+    }
     let mut failure = None;
-    let extract = |entry: &sevenz_rust2::ArchiveEntry, reader: &mut dyn Read, _: &PathBuf| {
+    let extract = |entry: &sevenz_rust2::ArchiveEntry, reader: &mut dyn Read| {
         let result = (|| -> Result<()> {
             let target = dest.join(safe_path(Path::new(entry.name()))?);
             if entry.is_directory() {
@@ -54,6 +76,7 @@ pub(super) fn extract_with_progress(
                     reader,
                     &mut File::create(&target)?,
                     budget,
+                    progress,
                     &target,
                     on_progress,
                 )?;
@@ -67,8 +90,7 @@ pub(super) fn extract_with_progress(
         }
         Ok(true)
     };
-    let pw = sevenz_rust2::Password::from(password.unwrap_or_default());
-    let result = sevenz_rust2::decompress_with_extract_fn_and_password(reader, dest, pw, extract);
+    let result = archive.for_each_entries(extract);
     if let Some(err) = failure {
         return Err(err);
     }

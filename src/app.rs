@@ -10,14 +10,17 @@ use std::thread;
 
 use anyhow::{Context, Result, bail};
 use clap::ColorChoice;
-use inquire::{Password, PasswordDisplayMode, ui::RenderConfig};
+use inquire::{
+    Password, PasswordDisplayMode,
+    ui::{Color, RenderConfig, StyleSheet},
+};
 use walkdir::WalkDir;
 
-use crate::cli::{self, Cli, Reporter};
+use crate::cli::{self, Cli, LayerProgress, Reporter};
 use crate::detect::detect_format;
 use crate::extract::{
-    Budget, GrowingFile, extract_growing_rar, extract_one, extract_one_with_callback,
-    extract_sevenz_with_progress,
+    Budget, GrowingFile, SevenZCallbacks, extract_growing_rar, extract_one,
+    extract_one_with_callback, extract_sevenz_with_progress,
 };
 
 pub(crate) fn run(color: ColorChoice) -> Result<()> {
@@ -34,6 +37,7 @@ pub(crate) fn run(color: ColorChoice) -> Result<()> {
     let password = if cli.ask_password {
         let render = if cli::terminal_color(cli.color, std::io::stdout().is_terminal()) {
             RenderConfig::default_colored()
+                .with_text_input(StyleSheet::new().with_fg(Color::LightCyan))
         } else {
             RenderConfig::empty()
         };
@@ -72,9 +76,18 @@ pub(crate) fn run(color: ColorChoice) -> Result<()> {
     );
     let format =
         detect_format(&input, password.as_deref())?.context("输入文件未识别为 ZIP、7z 或 RAR")?;
-    let reporter = Reporter::new(cli.color, &input, format)?;
+    let reporter = Reporter::new(cli.color, &input)?;
+    let root_progress = reporter.layer_started(1, &input, format);
     if cli.jobs == 1 {
-        extract_one(&input, staging.path(), format, password.as_deref(), &budget)?;
+        extract_one(
+            &input,
+            staging.path(),
+            format,
+            password.as_deref(),
+            &budget,
+            &root_progress,
+        )?;
+        root_progress.finish();
         expand_nested(
             staging.path(),
             1,
@@ -89,6 +102,7 @@ pub(crate) fn run(color: ColorChoice) -> Result<()> {
                 input: &input,
                 format,
                 progress: None,
+                display: &root_progress,
             },
             staging.path(),
             1,
@@ -113,6 +127,7 @@ struct LayerSource<'a> {
     input: &'a Path,
     format: crate::detect::Format,
     progress: Option<&'a GrowingFile>,
+    display: &'a LayerProgress,
 }
 
 enum WorkItem {
@@ -190,6 +205,7 @@ fn pipeline_layer(
         input,
         format,
         progress: source_progress,
+        display: layer_progress,
     } = source;
     let workspace = tempfile::Builder::new()
         .prefix(".acgdp-work-")
@@ -220,7 +236,15 @@ fn pipeline_layer(
             }
         };
         let extraction = if let Some(progress) = source_progress {
-            extract_growing_rar(input, staging, password, budget, progress, &mut on_file)
+            extract_growing_rar(
+                input,
+                staging,
+                password,
+                budget,
+                progress,
+                layer_progress,
+                &mut on_file,
+            )
         } else if let crate::detect::Format::SevenZ(offset) = format {
             extract_sevenz_with_progress(
                 input,
@@ -228,40 +252,52 @@ fn pipeline_layer(
                 offset,
                 password,
                 budget,
-                &mut on_file,
-                &mut |file, chunk, written| {
-                    if let Some(state) = growing.borrow().get(file).cloned() {
-                        return state.update(written);
-                    }
-                    let ready = probes
-                        .borrow_mut()
-                        .entry(file.to_path_buf())
-                        .or_default()
-                        .observe(chunk, written);
-                    if !ready {
-                        return Ok(());
-                    }
-                    if matches!(
-                        detect_format(file, password)?,
-                        Some(crate::detect::Format::Rar)
-                    ) {
-                        let state = Arc::new(GrowingFile::new());
-                        state.update(written)?;
-                        sender
-                            .send(WorkItem::GrowingRar(file.to_path_buf(), Arc::clone(&state)))
-                            .context("内层解压工作线程已停止")?;
-                        growing.borrow_mut().insert(file.to_path_buf(), state);
-                    } else {
-                        if let Some(probe) = probes.borrow_mut().get_mut(file) {
-                            probe.discard_checked(written);
+                layer_progress,
+                SevenZCallbacks {
+                    on_file: &mut on_file,
+                    on_progress: &mut |file, chunk, written| {
+                        if let Some(state) = growing.borrow().get(file).cloned() {
+                            return state.update(written);
                         }
-                    }
-                    Ok(())
+                        let ready = probes
+                            .borrow_mut()
+                            .entry(file.to_path_buf())
+                            .or_default()
+                            .observe(chunk, written);
+                        if !ready {
+                            return Ok(());
+                        }
+                        if matches!(
+                            detect_format(file, password)?,
+                            Some(crate::detect::Format::Rar)
+                        ) {
+                            let state = Arc::new(GrowingFile::new());
+                            state.update(written)?;
+                            sender
+                                .send(WorkItem::GrowingRar(file.to_path_buf(), Arc::clone(&state)))
+                                .context("内层解压工作线程已停止")?;
+                            growing.borrow_mut().insert(file.to_path_buf(), state);
+                        } else {
+                            if let Some(probe) = probes.borrow_mut().get_mut(file) {
+                                probe.discard_checked(written);
+                            }
+                        }
+                        Ok(())
+                    },
                 },
             )
         } else {
-            extract_one_with_callback(input, staging, format, password, budget, &mut on_file)
+            extract_one_with_callback(
+                input,
+                staging,
+                format,
+                password,
+                budget,
+                layer_progress,
+                &mut on_file,
+            )
         };
+        layer_progress.finish();
         for state in growing.borrow().values() {
             state.finish(extraction.is_err())?;
         }
@@ -315,12 +351,13 @@ fn process_completed_files(
         let target = tempfile::Builder::new()
             .prefix(".acgdp-layer-")
             .tempdir_in(workspace)?;
-        reporter.layer_started(depth + 1, &file, format);
+        let layer_progress = reporter.layer_started(depth + 1, &file, format);
         pipeline_layer(
             LayerSource {
                 input: &file,
                 format,
                 progress: progress.as_deref(),
+                display: &layer_progress,
             },
             target.path(),
             depth + 1,
@@ -371,9 +408,17 @@ fn expand_nested(
         let target = tempfile::Builder::new()
             .prefix(".acgdp-layer-")
             .tempdir_in(parent)?;
-        reporter.layer_started(depth + 1, &file, format);
-        extract_one(&file, target.path(), format, password, budget)
-            .with_context(|| format!("解压失败：{}", file.display()))?;
+        let layer_progress = reporter.layer_started(depth + 1, &file, format);
+        extract_one(
+            &file,
+            target.path(),
+            format,
+            password,
+            budget,
+            &layer_progress,
+        )
+        .with_context(|| format!("解压失败：{}", file.display()))?;
+        layer_progress.finish();
         expand_nested(target.path(), depth + 1, cli, password, budget, reporter)?;
         merge_contents(target.path(), parent)?;
         if !cli.keep_intermediates {

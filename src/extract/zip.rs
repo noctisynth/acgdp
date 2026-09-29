@@ -3,16 +3,29 @@ use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 
-use super::{Budget, copy_limited, safe_path};
+use super::{Budget, Progress, copy_limited, safe_path};
 
 pub(super) fn extract(
     source: &Path,
     dest: &Path,
     password: Option<&str>,
     budget: &Budget,
+    progress: &dyn Progress,
     on_file: &mut dyn FnMut(&Path) -> Result<()>,
 ) -> Result<()> {
     let mut archive = zip::ZipArchive::new(File::open(source)?)?;
+    if progress.is_visible() {
+        let mut total = Some(0u64);
+        for i in 0..archive.len() {
+            let entry = archive.by_index_raw(i)?;
+            if !entry.is_dir() {
+                total = total.and_then(|bytes| bytes.checked_add(entry.size()));
+            }
+        }
+        if let Some(bytes) = total {
+            progress.set_total(bytes);
+        }
+    }
     for i in 0..archive.len() {
         let raw = archive.by_index_raw(i)?;
         let path = safe_path(Path::new(raw.name()))?;
@@ -38,7 +51,7 @@ pub(super) fn extract(
         if target.exists() {
             bail!("ZIP 含重复或冲突路径：{}", target.display());
         }
-        copy_limited(&mut entry, &mut File::create(&target)?, budget)?;
+        copy_limited(&mut entry, &mut File::create(&target)?, budget, progress)?;
         on_file(&target)?;
     }
     Ok(())

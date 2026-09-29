@@ -4,7 +4,7 @@ use std::sync::{Condvar, Mutex};
 
 use anyhow::{Context, Result, bail};
 
-use super::{Budget, safe_path};
+use super::{Budget, Progress, safe_path};
 
 pub(crate) struct GrowingFile {
     state: Mutex<GrowingState>,
@@ -81,6 +81,7 @@ pub(super) fn extract(
     dest: &Path,
     password: Option<&str>,
     budget: &Budget,
+    progress: &dyn Progress,
     on_file: &mut dyn FnMut(&Path) -> Result<()>,
 ) -> Result<()> {
     let archive = if let Some(pw) = password {
@@ -118,6 +119,7 @@ pub(super) fn extract(
                 .with_context(|| format!("RAR 报告成功但未找到输出文件：{}", target.display()))?
                 .len();
             budget.charge(size)?;
+            progress.advance(size);
             on_file(&target)?;
         }
     }
@@ -130,6 +132,7 @@ pub(super) fn extract_growing(
     password: Option<&str>,
     budget: &Budget,
     growing: &GrowingFile,
+    progress: &dyn Progress,
     on_file: &mut dyn FnMut(&Path) -> Result<()>,
 ) -> Result<()> {
     let mut completed = 0usize;
@@ -152,7 +155,7 @@ pub(super) fn extract_growing(
         };
         if archive.is_solid() {
             if done {
-                return extract(source, dest, password, budget, on_file);
+                return extract(source, dest, password, budget, progress, on_file);
             }
             continue;
         }
@@ -227,6 +230,7 @@ pub(super) fn extract_growing(
                 };
                 let size = fs::metadata(&target)?.len();
                 budget.charge(size)?;
+                progress.advance(size);
                 on_file(&target)?;
             }
             index += 1;

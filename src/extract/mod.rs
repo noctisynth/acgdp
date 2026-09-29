@@ -16,6 +16,17 @@ use crate::detect::Format;
 
 type ProgressCallback<'a> = dyn FnMut(&Path, &[u8], u64) -> Result<()> + 'a;
 
+pub(crate) struct SevenZCallbacks<'a> {
+    pub(crate) on_file: &'a mut dyn FnMut(&Path) -> Result<()>,
+    pub(crate) on_progress: &'a mut ProgressCallback<'a>,
+}
+
+pub(crate) trait Progress: Sync {
+    fn is_visible(&self) -> bool;
+    fn set_total(&self, bytes: u64);
+    fn advance(&self, bytes: u64);
+}
+
 pub(crate) struct Budget {
     limit: u64,
     remaining: AtomicU64,
@@ -53,8 +64,17 @@ pub(crate) fn extract_one(
     format: Format,
     password: Option<&str>,
     budget: &Budget,
+    progress: &dyn Progress,
 ) -> Result<()> {
-    extract_one_with_callback(source, dest, format, password, budget, &mut |_| Ok(()))
+    extract_one_with_callback(
+        source,
+        dest,
+        format,
+        password,
+        budget,
+        progress,
+        &mut |_| Ok(()),
+    )
 }
 
 pub(crate) fn extract_one_with_callback(
@@ -63,12 +83,15 @@ pub(crate) fn extract_one_with_callback(
     format: Format,
     password: Option<&str>,
     budget: &Budget,
+    progress: &dyn Progress,
     on_file: &mut dyn FnMut(&Path) -> Result<()>,
 ) -> Result<()> {
     match format {
-        Format::Zip => zip::extract(source, dest, password, budget, on_file),
-        Format::SevenZ(offset) => sevenz::extract(source, dest, offset, password, budget, on_file),
-        Format::Rar => rar::extract(source, dest, password, budget, on_file),
+        Format::Zip => zip::extract(source, dest, password, budget, progress, on_file),
+        Format::SevenZ(offset) => {
+            sevenz::extract(source, dest, offset, password, budget, progress, on_file)
+        }
+        Format::Rar => rar::extract(source, dest, password, budget, progress, on_file),
     }
 }
 
@@ -78,10 +101,10 @@ pub(crate) fn extract_sevenz_with_progress(
     offset: u64,
     password: Option<&str>,
     budget: &Budget,
-    on_file: &mut dyn FnMut(&Path) -> Result<()>,
-    on_progress: &mut ProgressCallback<'_>,
+    progress: &dyn Progress,
+    callbacks: SevenZCallbacks<'_>,
 ) -> Result<()> {
-    sevenz::extract_with_progress(source, dest, offset, password, budget, on_file, on_progress)
+    sevenz::extract_with_progress(source, dest, offset, password, budget, progress, callbacks)
 }
 
 pub(crate) fn extract_growing_rar(
@@ -90,9 +113,10 @@ pub(crate) fn extract_growing_rar(
     password: Option<&str>,
     budget: &Budget,
     growing: &GrowingFile,
+    progress: &dyn Progress,
     on_file: &mut dyn FnMut(&Path) -> Result<()>,
 ) -> Result<()> {
-    rar::extract_growing(source, dest, password, budget, growing, on_file)
+    rar::extract_growing(source, dest, password, budget, growing, progress, on_file)
 }
 
 fn safe_path(name: &Path) -> Result<PathBuf> {
@@ -110,8 +134,14 @@ fn safe_path(name: &Path) -> Result<PathBuf> {
     Ok(result)
 }
 
-fn copy_limited(reader: &mut dyn Read, output: &mut File, budget: &Budget) -> Result<()> {
+fn copy_limited(
+    reader: &mut dyn Read,
+    output: &mut File,
+    budget: &Budget,
+    progress: &dyn Progress,
+) -> Result<()> {
     let mut buffer = [0u8; 64 * 1024];
+    let visible = progress.is_visible();
     loop {
         let n = reader.read(&mut buffer)?;
         if n == 0 {
@@ -119,6 +149,9 @@ fn copy_limited(reader: &mut dyn Read, output: &mut File, budget: &Budget) -> Re
         }
         budget.charge(n as u64)?;
         output.write_all(&buffer[..n])?;
+        if visible {
+            progress.advance(n as u64);
+        }
     }
     Ok(())
 }
@@ -127,11 +160,13 @@ fn copy_limited_with_progress(
     reader: &mut dyn Read,
     output: &mut File,
     budget: &Budget,
+    progress: &dyn Progress,
     target: &Path,
     on_progress: &mut ProgressCallback<'_>,
 ) -> Result<()> {
     let mut buffer = [0u8; 64 * 1024];
     let mut written = 0u64;
+    let visible = progress.is_visible();
     loop {
         let n = reader.read(&mut buffer)?;
         if n == 0 {
@@ -141,6 +176,9 @@ fn copy_limited_with_progress(
         output.write_all(&buffer[..n])?;
         written += n as u64;
         on_progress(target, &buffer[..n], written)?;
+        if visible {
+            progress.advance(n as u64);
+        }
     }
     Ok(())
 }

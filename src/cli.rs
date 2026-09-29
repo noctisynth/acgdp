@@ -1,14 +1,16 @@
 use std::io::{self, IsTerminal};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Instant;
 
 use anyhow::Result;
 use clap::builder::styling::{AnsiColor, Style, Styles};
 use clap::{ColorChoice, CommandFactory, FromArgMatches, Parser};
-use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
+use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
 
 use crate::detect::Format;
+use crate::extract::Progress;
 
 #[derive(Parser)]
 #[command(version, about = "递归解开 ZIP、7z、RAR，以及伪装成图片的压缩包")]
@@ -98,29 +100,38 @@ fn output_style(choice: ColorChoice, color: AnsiColor) -> Style {
 
 pub(crate) struct Reporter {
     choice: ColorChoice,
-    spinner: Option<ProgressBar>,
+    multi: Option<Arc<MultiProgress>>,
+    bar_style: ProgressStyle,
+    spinner_style: ProgressStyle,
     started: Instant,
     deepest: AtomicUsize,
 }
 
 impl Reporter {
-    pub(crate) fn new(choice: ColorChoice, input: &Path, format: Format) -> Result<Self> {
-        let spinner = if io::stdout().is_terminal() {
-            let bar = ProgressBar::new_spinner();
-            bar.set_draw_target(ProgressDrawTarget::stdout());
-            let template = if terminal_color(choice, true) {
-                "{spinner:.cyan}  正在解压 · {elapsed_precise}"
-            } else {
-                "{spinner}  正在解压 · {elapsed_precise}"
-            };
-            bar.set_style(ProgressStyle::with_template(template)?);
-            Some(bar)
+    pub(crate) fn new(choice: ColorChoice, input: &Path) -> Result<Self> {
+        let colored = terminal_color(choice, io::stdout().is_terminal());
+        let multi = if io::stdout().is_terminal() {
+            Some(Arc::new(MultiProgress::with_draw_target(
+                ProgressDrawTarget::stdout(),
+            )))
         } else {
             None
         };
+        let bar_template = if colored {
+            "    {bar:30.cyan/blue} {bytes}/{total_bytes} {percent:>3}% · {elapsed_precise}"
+        } else {
+            "    {bar:30} {bytes}/{total_bytes} {percent:>3}% · {elapsed_precise}"
+        };
+        let spinner_template = if colored {
+            "    {spinner:.cyan} 已写出 {bytes} · {elapsed_precise}"
+        } else {
+            "    {spinner} 已写出 {bytes} · {elapsed_precise}"
+        };
         let reporter = Self {
             choice,
-            spinner,
+            multi,
+            bar_style: ProgressStyle::with_template(bar_template)?,
+            spinner_style: ProgressStyle::with_template(spinner_template)?,
             started: Instant::now(),
             deepest: AtomicUsize::new(1),
         };
@@ -129,14 +140,10 @@ impl Reporter {
             .unwrap_or(input.as_os_str())
             .to_string_lossy();
         reporter.line(format!("acgdp  {name}"));
-        reporter.layer_started(1, input, format);
-        if let Some(bar) = &reporter.spinner {
-            bar.enable_steady_tick(std::time::Duration::from_millis(100));
-        }
         Ok(reporter)
     }
 
-    pub(crate) fn layer_started(&self, depth: usize, path: &Path, format: Format) {
+    pub(crate) fn layer_started(&self, depth: usize, path: &Path, format: Format) -> LayerProgress {
         self.deepest.fetch_max(depth, Ordering::Relaxed);
         let name = path
             .file_name()
@@ -152,11 +159,23 @@ impl Reporter {
             "  {number}{depth}{}  {label:<3}  {name}",
             number.render_reset()
         ));
+        let bar = self.multi.as_ref().map(|multi| {
+            let bar = multi.add(ProgressBar::new_spinner());
+            bar.set_style(self.spinner_style.clone());
+            bar.enable_steady_tick(std::time::Duration::from_millis(100));
+            bar
+        });
+        LayerProgress {
+            bar,
+            multi: self.multi.clone(),
+            bar_style: self.bar_style.clone(),
+            finished: AtomicBool::new(false),
+        }
     }
 
     pub(crate) fn finished(&self, path: &Path, written: u64) {
-        if let Some(bar) = &self.spinner {
-            bar.finish_and_clear();
+        if let Some(multi) = &self.multi {
+            let _ = multi.clear();
         }
         let style = output_style(self.choice, AnsiColor::Green);
         println!(
@@ -170,8 +189,8 @@ impl Reporter {
     }
 
     fn line(&self, message: String) {
-        if let Some(bar) = &self.spinner {
-            bar.suspend(|| println!("{message}"));
+        if let Some(multi) = &self.multi {
+            multi.suspend(|| println!("{message}"));
         } else {
             println!("{message}");
         }
@@ -180,9 +199,56 @@ impl Reporter {
 
 impl Drop for Reporter {
     fn drop(&mut self) {
-        if let Some(bar) = &self.spinner {
-            bar.finish_and_clear();
+        if let Some(multi) = &self.multi {
+            let _ = multi.clear();
         }
+    }
+}
+
+pub(crate) struct LayerProgress {
+    bar: Option<ProgressBar>,
+    multi: Option<Arc<MultiProgress>>,
+    bar_style: ProgressStyle,
+    finished: AtomicBool,
+}
+
+impl Progress for LayerProgress {
+    fn is_visible(&self) -> bool {
+        self.bar.is_some()
+    }
+
+    fn set_total(&self, bytes: u64) {
+        if bytes > 0
+            && let Some(bar) = &self.bar
+        {
+            bar.set_style(self.bar_style.clone());
+            bar.set_length(bytes);
+        }
+    }
+
+    fn advance(&self, bytes: u64) {
+        if let Some(bar) = &self.bar {
+            bar.inc(bytes);
+        }
+    }
+}
+
+impl LayerProgress {
+    pub(crate) fn finish(&self) {
+        if !self.finished.swap(true, Ordering::Relaxed)
+            && let Some(bar) = &self.bar
+        {
+            bar.finish_and_clear();
+            if let Some(multi) = &self.multi {
+                multi.remove(bar);
+            }
+        }
+    }
+}
+
+impl Drop for LayerProgress {
+    fn drop(&mut self) {
+        self.finish();
     }
 }
 
