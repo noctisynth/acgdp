@@ -149,6 +149,19 @@ try:
         run(mixed_7z)
         assert (base / "mixed-7z.zip.extracted" / "seven.txt").read_bytes() == b"7z payload"
 
+        growing_inner = base / "growing-rar.jpg"
+        growing_inner.write_bytes(PNG + (ROOT / "tests" / "fixtures" / "sample-rar5.rar").read_bytes() + b"x" * (2 * 1024 * 1024))
+        growing_outer = base / "growing-rar.7z"
+        subprocess.run([str(SEVEN_Z), "a", "-mx=0", str(growing_outer), str(growing_inner)], check=True, capture_output=True)
+        run(growing_outer)
+        assert (base / "growing-rar.7z.extracted" / "testfile.txt").is_file()
+        assert not (base / "growing-rar.7z.extracted" / "growing-rar.jpg").exists()
+        truncated = base / "growing-rar-truncated.7z"
+        growing_data = growing_outer.read_bytes()
+        truncated.write_bytes(growing_data[: len(growing_data) // 2])
+        refused = subprocess.run([str(ACGDP), str(truncated), "-o", str(base / "truncated-result")], capture_output=True)
+        assert refused.returncode != 0 and not (base / "truncated-result").exists()
+
         protected_7z = base / "locked.7z"
         subprocess.run(
             [str(SEVEN_Z), "a", str(protected_7z), str(seven_source), "-psecret", "-mhe=on"],

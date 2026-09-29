@@ -1,6 +1,9 @@
+use std::cell::RefCell;
+use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::mpsc::{Receiver, sync_channel};
 use std::thread;
 
@@ -10,7 +13,10 @@ use walkdir::WalkDir;
 
 use crate::cli::{self, Cli};
 use crate::detect::detect_format;
-use crate::extract::{Budget, extract_one, extract_one_with_callback};
+use crate::extract::{
+    Budget, GrowingFile, extract_growing_rar, extract_one, extract_one_with_callback,
+    extract_sevenz_with_progress,
+};
 
 pub(crate) fn run(color: ColorChoice) -> Result<()> {
     let Some(cli) = cli::parse_or_help(color)? else {
@@ -77,6 +83,68 @@ struct CompletedLayer {
     output: tempfile::TempDir,
 }
 
+enum WorkItem {
+    Completed(PathBuf),
+    GrowingRar(PathBuf, Arc<GrowingFile>),
+}
+
+#[derive(Default)]
+struct RarProbe {
+    carry: Vec<u8>,
+    candidates: VecDeque<u64>,
+}
+
+impl RarProbe {
+    fn observe(&mut self, chunk: &[u8], written: u64) -> bool {
+        let start = written - chunk.len() as u64;
+        let mut boundary = self.carry.clone();
+        boundary.extend_from_slice(&chunk[..chunk.len().min(7)]);
+        let boundary_start = start.saturating_sub(self.carry.len() as u64);
+        for index in memchr::memchr_iter(b'R', &boundary[..self.carry.len()]) {
+            if is_rar_signature(&boundary[index..]) {
+                self.add_candidate(boundary_start + index as u64);
+            }
+        }
+        for index in memchr::memchr_iter(b'R', chunk) {
+            if is_rar_signature(&chunk[index..]) {
+                self.add_candidate(start + index as u64);
+            }
+        }
+        if chunk.len() >= 7 {
+            self.carry.clear();
+            self.carry.extend_from_slice(&chunk[chunk.len() - 7..]);
+        } else {
+            self.carry.extend_from_slice(chunk);
+            let excess = self.carry.len().saturating_sub(7);
+            self.carry.drain(..excess);
+        }
+        self.candidates
+            .front()
+            .is_some_and(|offset| offset.saturating_add(2 * 1024 * 1024) <= written)
+    }
+
+    fn add_candidate(&mut self, offset: u64) {
+        if self.candidates.len() < 128 && self.candidates.back().is_none_or(|last| *last != offset)
+        {
+            self.candidates.push_back(offset);
+        }
+    }
+
+    fn discard_checked(&mut self, written: u64) {
+        while self
+            .candidates
+            .front()
+            .is_some_and(|offset| offset.saturating_add(2 * 1024 * 1024) <= written)
+        {
+            self.candidates.pop_front();
+        }
+    }
+}
+
+fn is_rar_signature(bytes: &[u8]) -> bool {
+    bytes.starts_with(b"Rar!\x1A\x07\x00") || bytes.starts_with(b"Rar!\x1A\x07\x01\x00")
+}
+
 fn pipeline_first_layer(
     input: &Path,
     staging: &Path,
@@ -92,12 +160,62 @@ fn pipeline_first_layer(
         let (sender, receiver) = sync_channel(1);
         let worker = scope
             .spawn(|| process_completed_files(receiver, workspace.path(), cli, password, budget));
-        let extraction =
-            extract_one_with_callback(input, staging, format, password, budget, &mut |file| {
+        let growing = RefCell::new(HashMap::<PathBuf, Arc<GrowingFile>>::new());
+        let probes = RefCell::new(HashMap::<PathBuf, RarProbe>::new());
+        let mut on_file = |file: &Path| {
+            probes.borrow_mut().remove(file);
+            if let Some(state) = growing.borrow_mut().remove(file) {
+                state.finish(false)
+            } else {
                 sender
-                    .send(file.to_path_buf())
+                    .send(WorkItem::Completed(file.to_path_buf()))
                     .context("内层解压工作线程已停止")
-            });
+            }
+        };
+        let extraction = if let crate::detect::Format::SevenZ(offset) = format {
+            extract_sevenz_with_progress(
+                input,
+                staging,
+                offset,
+                password,
+                budget,
+                &mut on_file,
+                &mut |file, chunk, written| {
+                    if let Some(state) = growing.borrow().get(file).cloned() {
+                        return state.update(written);
+                    }
+                    let ready = probes
+                        .borrow_mut()
+                        .entry(file.to_path_buf())
+                        .or_default()
+                        .observe(chunk, written);
+                    if !ready {
+                        return Ok(());
+                    }
+                    if matches!(
+                        detect_format(file, password)?,
+                        Some(crate::detect::Format::Rar)
+                    ) {
+                        let state = Arc::new(GrowingFile::new());
+                        state.update(written)?;
+                        sender
+                            .send(WorkItem::GrowingRar(file.to_path_buf(), Arc::clone(&state)))
+                            .context("内层解压工作线程已停止")?;
+                        growing.borrow_mut().insert(file.to_path_buf(), state);
+                    } else {
+                        if let Some(probe) = probes.borrow_mut().get_mut(file) {
+                            probe.discard_checked(written);
+                        }
+                    }
+                    Ok(())
+                },
+            )
+        } else {
+            extract_one_with_callback(input, staging, format, password, budget, &mut on_file)
+        };
+        for state in growing.borrow().values() {
+            state.finish(extraction.is_err())?;
+        }
         drop(sender);
         let processed = worker
             .join()
@@ -117,16 +235,24 @@ fn pipeline_first_layer(
 }
 
 fn process_completed_files(
-    receiver: Receiver<PathBuf>,
+    receiver: Receiver<WorkItem>,
     workspace: &Path,
     cli: &Cli,
     password: Option<&str>,
     budget: &Budget,
 ) -> Result<Vec<CompletedLayer>> {
     let mut completed = Vec::new();
-    for file in receiver {
-        let Some(format) = detect_format(&file, password)? else {
-            continue;
+    for item in receiver {
+        let (file, format, progress) = match item {
+            WorkItem::Completed(file) => {
+                let Some(format) = detect_format(&file, password)? else {
+                    continue;
+                };
+                (file, format, None)
+            }
+            WorkItem::GrowingRar(file, progress) => {
+                (file, crate::detect::Format::Rar, Some(progress))
+            }
         };
         if cli.max_depth <= 1 {
             bail!(
@@ -139,8 +265,20 @@ fn process_completed_files(
             .prefix(".acgdp-layer-")
             .tempdir_in(workspace)?;
         cli::layer_started(cli.color, 2, &file, format);
-        extract_one(&file, target.path(), format, password, budget)
-            .with_context(|| format!("解压失败：{}", file.display()))?;
+        if let Some(progress) = progress {
+            extract_growing_rar(
+                &file,
+                target.path(),
+                password,
+                budget,
+                &progress,
+                &mut |_| Ok(()),
+            )
+            .with_context(|| format!("流水线 RAR 解压失败：{}", file.display()))?;
+        } else {
+            extract_one(&file, target.path(), format, password, budget)
+                .with_context(|| format!("解压失败：{}", file.display()))?;
+        }
         expand_nested(target.path(), 2, cli, password, budget)?;
         completed.push(CompletedLayer {
             source: file,

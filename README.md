@@ -37,7 +37,7 @@ acgdp game.7z.001 --ask-password
 
 Help, extraction progress, and errors use color in a terminal. Set `--color always` to keep colors when redirecting output, or `--color never` to disable them; `auto` is the default.
 
-By default, `--jobs 2` lets extraction of a completed inner archive overlap with extraction of later files from its parent. Use `--jobs 1` for the serial path. An inner archive must be fully written before its extraction starts; a single nested file cannot yet be decoded byte by byte as it arrives. The speedup depends on the archive layout and storage device.
+By default, `--jobs 2` can extract complete RAR entries while their enclosing 7z member is still being written, when the RAR archive is not solid. Other layouts start the inner archive after its file is complete. Use `--jobs 1` for the serial path. The speedup depends on the archive layout and storage device.
 
 ## Behavior and limits
 
@@ -58,4 +58,4 @@ cargo bench --bench nested_extraction -- --noplot
 
 The smoke test covers nested ZIPs, ZIP/7z/RAR appended to images, RAR3/RAR5, encrypted ZIP/7z, and cleanup on failure. The 7z and encrypted ZIP cases require 7-Zip installed locally; the other tests do not. Two RAR fixtures in `tests/fixtures` come from [RAR Test Files](https://github.com/ssokolow/rar-test-files) under CC0. A RAR fixture used to check symbolic link rejection comes from the [libarchive test suite](https://github.com/libarchive/libarchive/blob/master/libarchive/test/test_read_format_rar.rar.uu).
 
-The Criterion benchmark compares `--jobs 1` and `--jobs 2` on generated nested ZIP fixtures. It includes several inner archives plus a large ordinary file and a single-chain case. See [benchmark notes](.agents/spikes/0001-pipeline-benchmark.md) for the measured results and limits.
+The Criterion benchmark compares `--jobs 1` and `--jobs 2` on generated nested ZIP fixtures. It includes several inner archives plus a large ordinary file and a single-chain case. See [benchmark notes](.agents/spikes/0001-pipeline-benchmark.md) for the measured results and limits. A single-run comparison on a real split 7z→RAR5 archive is in the [sample validation](.agents/spikes/0002-real-split-archive.md); results varied between runs, so speedups are not guaranteed.

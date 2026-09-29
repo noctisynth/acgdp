@@ -3,6 +3,8 @@ mod sevenz;
 mod volume;
 mod zip;
 
+pub(crate) use rar::GrowingFile;
+
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
@@ -11,6 +13,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use anyhow::{Result, bail};
 
 use crate::detect::Format;
+
+type ProgressCallback<'a> = dyn FnMut(&Path, &[u8], u64) -> Result<()> + 'a;
 
 pub(crate) struct Budget {
     limit: u64,
@@ -68,6 +72,29 @@ pub(crate) fn extract_one_with_callback(
     }
 }
 
+pub(crate) fn extract_sevenz_with_progress(
+    source: &Path,
+    dest: &Path,
+    offset: u64,
+    password: Option<&str>,
+    budget: &Budget,
+    on_file: &mut dyn FnMut(&Path) -> Result<()>,
+    on_progress: &mut ProgressCallback<'_>,
+) -> Result<()> {
+    sevenz::extract_with_progress(source, dest, offset, password, budget, on_file, on_progress)
+}
+
+pub(crate) fn extract_growing_rar(
+    source: &Path,
+    dest: &Path,
+    password: Option<&str>,
+    budget: &Budget,
+    growing: &GrowingFile,
+    on_file: &mut dyn FnMut(&Path) -> Result<()>,
+) -> Result<()> {
+    rar::extract_growing(source, dest, password, budget, growing, on_file)
+}
+
 fn safe_path(name: &Path) -> Result<PathBuf> {
     let mut result = PathBuf::new();
     for part in name.components() {
@@ -92,6 +119,28 @@ fn copy_limited(reader: &mut dyn Read, output: &mut File, budget: &Budget) -> Re
         }
         budget.charge(n as u64)?;
         output.write_all(&buffer[..n])?;
+    }
+    Ok(())
+}
+
+fn copy_limited_with_progress(
+    reader: &mut dyn Read,
+    output: &mut File,
+    budget: &Budget,
+    target: &Path,
+    on_progress: &mut ProgressCallback<'_>,
+) -> Result<()> {
+    let mut buffer = [0u8; 64 * 1024];
+    let mut written = 0u64;
+    loop {
+        let n = reader.read(&mut buffer)?;
+        if n == 0 {
+            break;
+        }
+        budget.charge(n as u64)?;
+        output.write_all(&buffer[..n])?;
+        written += n as u64;
+        on_progress(target, &buffer[..n], written)?;
     }
     Ok(())
 }

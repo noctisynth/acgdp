@@ -4,7 +4,9 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 
-use super::{Budget, copy_limited, safe_path, volume::VolumeReader};
+use super::{
+    Budget, ProgressCallback, copy_limited_with_progress, safe_path, volume::VolumeReader,
+};
 
 pub(super) fn extract(
     source: &Path,
@@ -13,6 +15,26 @@ pub(super) fn extract(
     password: Option<&str>,
     budget: &Budget,
     on_file: &mut dyn FnMut(&Path) -> Result<()>,
+) -> Result<()> {
+    extract_with_progress(
+        source,
+        dest,
+        offset,
+        password,
+        budget,
+        on_file,
+        &mut |_, _, _| Ok(()),
+    )
+}
+
+pub(super) fn extract_with_progress(
+    source: &Path,
+    dest: &Path,
+    offset: u64,
+    password: Option<&str>,
+    budget: &Budget,
+    on_file: &mut dyn FnMut(&Path) -> Result<()>,
+    on_progress: &mut ProgressCallback<'_>,
 ) -> Result<()> {
     let reader = OffsetReader::new(VolumeReader::open(source)?, offset)?;
     let mut failure = None;
@@ -28,7 +50,13 @@ pub(super) fn extract(
                 if target.exists() {
                     bail!("7z 含重复或冲突路径：{}", target.display());
                 }
-                copy_limited(reader, &mut File::create(&target)?, budget)?;
+                copy_limited_with_progress(
+                    reader,
+                    &mut File::create(&target)?,
+                    budget,
+                    &target,
+                    on_progress,
+                )?;
                 on_file(&target)?;
             }
             Ok(())
