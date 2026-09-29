@@ -1,5 +1,6 @@
 mod rar;
 mod sevenz;
+mod volume;
 mod zip;
 
 use std::fs::File;

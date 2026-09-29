@@ -30,6 +30,7 @@ acgdp game.jpg -p 'shared-password' --keep-intermediates
 acgdp game.jpg --max-depth 64 --max-gib 50
 acgdp game.jpg --color always
 acgdp game.jpg --jobs 1
+acgdp game.7z.001 --ask-password
 ```
 
 `-p` is useful in scripts, but the password may appear in process arguments. Use `--ask-password` for interactive use. Unencrypted archives need no password.
@@ -41,6 +42,7 @@ By default, `--jobs 2` lets extraction of a completed inner archive overlap with
 ## Behavior and limits
 
 - Takes one input file and ignores its extension. ZIP and 7z use Rust libraries; RAR uses `unrar-ng`, which includes RARLAB's UnRAR C/C++ code.
+- For a split 7z archive, pass the `.001` file and keep `.002`, `.003`, and later parts beside it. The parts are read as one archive without creating a joined copy.
 - Extracts to a temporary directory and creates the final output directory only after every nested layer succeeds. A failure leaves the original input intact and no partial output directory.
 - Refuses to overwrite an existing output directory or a file with the same name. It also rejects archive entries with escaping paths or symbolic links.
 - Extracts at most 32 layers and writes at most 20 GiB across all layers by default. ZIP and 7z are limited as bytes are written. RAR entry sizes are checked before extraction and the written sizes are checked afterward.

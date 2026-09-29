@@ -50,7 +50,8 @@ pub(crate) fn run(color: ColorChoice) -> Result<()> {
             .checked_mul(1024 * 1024 * 1024)
             .context("--max-gib 数值过大")?,
     );
-    let format = detect_format(&input)?.context("输入文件未识别为 ZIP、7z 或 RAR")?;
+    let format =
+        detect_format(&input, password.as_deref())?.context("输入文件未识别为 ZIP、7z 或 RAR")?;
     cli::extraction_started(cli.color, &input, format);
     if cli.jobs == 1 {
         extract_one(&input, staging.path(), format, password.as_deref(), &budget)?;
@@ -124,7 +125,7 @@ fn process_completed_files(
 ) -> Result<Vec<CompletedLayer>> {
     let mut completed = Vec::new();
     for file in receiver {
-        let Some(format) = detect_format(&file)? else {
+        let Some(format) = detect_format(&file, password)? else {
             continue;
         };
         if cli.max_depth <= 1 {
@@ -167,7 +168,7 @@ fn expand_nested(
         }
     }
     for file in files {
-        let Some(format) = detect_format(&file)? else {
+        let Some(format) = detect_format(&file, password)? else {
             continue;
         };
         if depth >= cli.max_depth {

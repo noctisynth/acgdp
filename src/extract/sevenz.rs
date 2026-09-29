@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 
-use super::{Budget, copy_limited, safe_path};
+use super::{Budget, copy_limited, safe_path, volume::VolumeReader};
 
 pub(super) fn extract(
     source: &Path,
@@ -14,7 +14,7 @@ pub(super) fn extract(
     budget: &Budget,
     on_file: &mut dyn FnMut(&Path) -> Result<()>,
 ) -> Result<()> {
-    let reader = OffsetReader::new(File::open(source)?, offset)?;
+    let reader = OffsetReader::new(VolumeReader::open(source)?, offset)?;
     let mut failure = None;
     let extract = |entry: &sevenz_rust2::ArchiveEntry, reader: &mut dyn Read, _: &PathBuf| {
         let result = (|| -> Result<()> {

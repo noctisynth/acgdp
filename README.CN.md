@@ -30,6 +30,7 @@ acgdp game.jpg -p 'shared-password' --keep-intermediates
 acgdp game.jpg --max-depth 64 --max-gib 50
 acgdp game.jpg --color always
 acgdp game.jpg --jobs 1
+acgdp game.7z.001 --ask-password
 ```
 
 `-p` 便于脚本使用，但密码可能出现在进程参数中；手动运行建议用 `--ask-password`。如果文件没有加密，不需要提供密码。
@@ -41,6 +42,7 @@ acgdp game.jpg --jobs 1
 ## 行为与限制
 
 - 支持单个输入文件；不依赖文件后缀。ZIP 和 7z 使用 Rust 库；RAR 使用 `unrar-ng`，其底层包含 RARLAB 的 UnRAR C/C++ 代码。
+- 7z 分卷从 `.001` 文件开始输入，`.002`、`.003` 等后续分卷放在同一目录；程序将它们作为一个归档读取，不会另建拼接副本。
 - 先解到临时目录，整条嵌套链成功后才生成输出目录。失败时最初的输入文件仍在，且不会留下部分结果。
 - 拒绝覆盖现有输出目录或同名文件，也拒绝压缩包中的越界路径与符号链接。
 - 默认最多解开 32 层，累计写出最多 20 GiB。ZIP、7z 按实际写出字节限制；RAR 先检查条目声明大小，再核对提取后的大小。

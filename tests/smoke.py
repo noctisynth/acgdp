@@ -80,11 +80,13 @@ try:
         "one.jpg": make_zip({"one.txt": b"one"}),
         "two.png": make_zip({"two.txt": b"two"}),
         "plain.txt": b"plain",
+        "ordinary.dll": b"binary data" + bytes.fromhex("526172211a070100") + b"not a rar header",
     }))
     run(siblings)
     assert (base / "siblings.zip.extracted" / "one.txt").read_bytes() == b"one"
     assert (base / "siblings.zip.extracted" / "two.txt").read_bytes() == b"two"
     assert (base / "siblings.zip.extracted" / "plain.txt").read_bytes() == b"plain"
+    assert (base / "siblings.zip.extracted" / "ordinary.dll").is_file()
 
     run(outer, "--keep-intermediates", "-o", base / "kept")
     assert (base / "kept" / "inner.jpg").is_file()
@@ -123,6 +125,20 @@ try:
         seven_source.write_bytes(b"7z payload")
         seven_archive = base / "seven.7z"
         subprocess.run([str(SEVEN_Z), "a", str(seven_archive), str(seven_source)], check=True, capture_output=True)
+        split_data = seven_archive.read_bytes()
+        split_at = len(split_data) // 2
+        first_part = base / "split.7z.001"
+        second_part = base / "split.7z.002"
+        first_part.write_bytes(split_data[:split_at])
+        second_part.write_bytes(split_data[split_at:])
+        run(first_part)
+        assert (base / "split.7z.001.extracted" / "seven.txt").read_bytes() == b"7z payload"
+        second_part.unlink()
+        missing_part = subprocess.run(
+            [str(ACGDP), str(first_part), "-o", str(base / "missing-part")], capture_output=True
+        )
+        assert missing_part.returncode != 0 and not (base / "missing-part").exists()
+
         disguised = base / "seven.png"
         disguised.write_bytes(PNG + seven_archive.read_bytes())
         run(disguised)

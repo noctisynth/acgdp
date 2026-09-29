@@ -8,7 +8,9 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "crc32fast",
  "criterion",
+ "memchr",
  "rpassword",
  "sevenz-rust2",
  "tempfile",
