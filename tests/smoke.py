@@ -67,6 +67,11 @@ try:
     assert colored.returncode == 0 and b"\x1b[" in colored.stdout
     plain = subprocess.run([str(ACGDP), str(outer), "--color", "never", "-o", str(base / "plain")], capture_output=True)
     assert plain.returncode == 0 and b"\x1b[" not in plain.stdout
+    plain_output = plain.stdout.decode("utf-8")
+    assert "  1  ZIP  outer.zip" in plain_output
+    assert "  2  ZIP  inner.jpg" in plain_output
+    assert "✓ 完成 · 2 层 · 累计写出" in plain_output
+    assert "\\\\?\\" not in plain_output and ".acgdp-" not in plain_output
     output = base / "outer.zip.extracted"
     assert outer.exists()
     assert not (output / "inner.jpg").exists()

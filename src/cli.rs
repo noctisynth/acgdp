@@ -1,9 +1,12 @@
 use std::io::{self, IsTerminal};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Instant;
 
 use anyhow::Result;
 use clap::builder::styling::{AnsiColor, Style, Styles};
 use clap::{ColorChoice, CommandFactory, FromArgMatches, Parser};
+use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 
 use crate::detect::Format;
 
@@ -93,33 +96,123 @@ fn output_style(choice: ColorChoice, color: AnsiColor) -> Style {
     }
 }
 
-pub(crate) fn extraction_started(choice: ColorChoice, path: &Path, format: Format) {
-    let style = output_style(choice, AnsiColor::Cyan);
-    println!(
-        "{style}解压{} {} ({format:?})",
-        style.render_reset(),
-        path.display()
-    );
+pub(crate) struct Reporter {
+    choice: ColorChoice,
+    spinner: Option<ProgressBar>,
+    started: Instant,
+    deepest: AtomicUsize,
 }
 
-pub(crate) fn layer_started(choice: ColorChoice, depth: usize, path: &Path, format: Format) {
-    let style = output_style(choice, AnsiColor::Magenta);
-    println!(
-        "{style}第 {} 层：{} {} ({format:?})",
-        depth,
-        style.render_reset(),
-        path.display()
-    );
+impl Reporter {
+    pub(crate) fn new(choice: ColorChoice, input: &Path, format: Format) -> Result<Self> {
+        let spinner = if io::stdout().is_terminal() {
+            let bar = ProgressBar::new_spinner();
+            bar.set_draw_target(ProgressDrawTarget::stdout());
+            let template = if terminal_color(choice, true) {
+                "{spinner:.cyan}  正在解压 · {elapsed_precise}"
+            } else {
+                "{spinner}  正在解压 · {elapsed_precise}"
+            };
+            bar.set_style(ProgressStyle::with_template(template)?);
+            Some(bar)
+        } else {
+            None
+        };
+        let reporter = Self {
+            choice,
+            spinner,
+            started: Instant::now(),
+            deepest: AtomicUsize::new(1),
+        };
+        let name = input
+            .file_name()
+            .unwrap_or(input.as_os_str())
+            .to_string_lossy();
+        reporter.line(format!("acgdp  {name}"));
+        reporter.layer_started(1, input, format);
+        if let Some(bar) = &reporter.spinner {
+            bar.enable_steady_tick(std::time::Duration::from_millis(100));
+        }
+        Ok(reporter)
+    }
+
+    pub(crate) fn layer_started(&self, depth: usize, path: &Path, format: Format) {
+        self.deepest.fetch_max(depth, Ordering::Relaxed);
+        let name = path
+            .file_name()
+            .unwrap_or(path.as_os_str())
+            .to_string_lossy();
+        let label = match format {
+            Format::Zip => "ZIP",
+            Format::SevenZ(_) => "7z",
+            Format::Rar => "RAR",
+        };
+        let number = output_style(self.choice, AnsiColor::Cyan);
+        self.line(format!(
+            "  {number}{depth}{}  {label:<3}  {name}",
+            number.render_reset()
+        ));
+    }
+
+    pub(crate) fn finished(&self, path: &Path, written: u64) {
+        if let Some(bar) = &self.spinner {
+            bar.finish_and_clear();
+        }
+        let style = output_style(self.choice, AnsiColor::Green);
+        println!(
+            "{style}✓ 完成{} · {} 层 · 累计写出 {} · {:.1} 秒",
+            style.render_reset(),
+            self.deepest.load(Ordering::Relaxed),
+            human_bytes(written),
+            self.started.elapsed().as_secs_f64()
+        );
+        println!("  输出 {}", display_path(path));
+    }
+
+    fn line(&self, message: String) {
+        if let Some(bar) = &self.spinner {
+            bar.suspend(|| println!("{message}"));
+        } else {
+            println!("{message}");
+        }
+    }
 }
 
-pub(crate) fn extraction_finished(choice: ColorChoice, path: &Path, written: u64) {
-    let style = output_style(choice, AnsiColor::Green);
-    println!(
-        "{style}完成：{}{}（累计解压 {} 字节）",
-        style.render_reset(),
-        path.display(),
-        written
-    );
+impl Drop for Reporter {
+    fn drop(&mut self) {
+        if let Some(bar) = &self.spinner {
+            bar.finish_and_clear();
+        }
+    }
+}
+
+fn human_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{value:.2} {}", UNITS[unit])
+    }
+}
+
+fn display_path(path: &Path) -> String {
+    let shown = path.to_string_lossy();
+    #[cfg(windows)]
+    {
+        if let Some(rest) = shown.strip_prefix(r"\\?\UNC\") {
+            return format!(r"\\{rest}");
+        }
+        if let Some(rest) = shown.strip_prefix(r"\\?\") {
+            return rest.to_owned();
+        }
+    }
+    shown.into_owned()
 }
 
 pub(crate) fn print_error(choice: ColorChoice, error: &anyhow::Error) {

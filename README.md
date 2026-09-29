@@ -33,9 +33,9 @@ acgdp game.jpg --jobs 1
 acgdp game.7z.001 --ask-password
 ```
 
-`-p` is useful in scripts, but the password may appear in process arguments. Use `--ask-password` for an interactive Chinese prompt with hidden input; its colors follow `--color`. Unencrypted archives need no password.
+`-p` is useful in scripts, but the password may appear in process arguments. Use `--ask-password` for an interactive Chinese prompt that keeps the cursor on the prompt line and hides the input without revealing its length. Unencrypted archives need no password.
 
-Help, extraction progress, and errors use color in a terminal. Set `--color always` to keep colors when redirecting output, or `--color never` to disable them; `auto` is the default.
+Help, extraction progress, and errors use color in a terminal. Progress shows each layer's number, format, and archive name, followed by the output location, total bytes written, and elapsed time. A terminal also shows an activity spinner; redirected output has plain lines without an animated spinner. Set `--color always` to keep colors when redirecting output, or `--color never` to disable them; `auto` is the default.
 
 By default, `--jobs 2` passes completed inner archives to the next worker at every nesting level, allowing multiple layers to overlap. When a 7z member contains a non-solid RAR, the next layer can extract complete RAR entries while that member is still being written. Other format combinations start after the inner file is complete. Use `--jobs 1` for the serial path. `--jobs 2` enables the pipeline and may create a stage at each nested level; it does not cap the process at two threads. The speedup depends on the archive layout and storage device.
 

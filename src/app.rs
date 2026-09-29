@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::fs;
-use std::io::IsTerminal;
+use std::io::{self, Write};
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -10,10 +10,9 @@ use std::thread;
 
 use anyhow::{Context, Result, bail};
 use clap::ColorChoice;
-use inquire::{Password, ui::RenderConfig};
 use walkdir::WalkDir;
 
-use crate::cli::{self, Cli};
+use crate::cli::{self, Cli, Reporter};
 use crate::detect::detect_format;
 use crate::extract::{
     Budget, GrowingFile, extract_growing_rar, extract_one, extract_one_with_callback,
@@ -32,18 +31,11 @@ pub(crate) fn run(color: ColorChoice) -> Result<()> {
         bail!("输入必须是文件：{}", input.display());
     }
     let password = if cli.ask_password {
-        let render = if cli::terminal_color(cli.color, std::io::stdout().is_terminal()) {
-            RenderConfig::default_colored()
-        } else {
-            RenderConfig::empty()
-        };
-        Some(
-            Password::new("压缩包密码")
-                .without_confirmation()
-                .with_render_config(render)
-                .prompt()
-                .context("无法从终端读取密码")?,
-        )
+        let mut output = io::stdout().lock();
+        output.write_all("压缩包密码：".as_bytes())?;
+        output.flush()?;
+        drop(output);
+        Some(rpassword::read_password().context("无法从终端读取密码")?)
     } else {
         cli.password.clone()
     };
@@ -71,10 +63,17 @@ pub(crate) fn run(color: ColorChoice) -> Result<()> {
     );
     let format =
         detect_format(&input, password.as_deref())?.context("输入文件未识别为 ZIP、7z 或 RAR")?;
-    cli::extraction_started(cli.color, &input, format);
+    let reporter = Reporter::new(cli.color, &input, format)?;
     if cli.jobs == 1 {
         extract_one(&input, staging.path(), format, password.as_deref(), &budget)?;
-        expand_nested(staging.path(), 1, &cli, password.as_deref(), &budget)?;
+        expand_nested(
+            staging.path(),
+            1,
+            &cli,
+            password.as_deref(),
+            &budget,
+            &reporter,
+        )?;
     } else {
         pipeline_layer(
             LayerSource {
@@ -87,11 +86,12 @@ pub(crate) fn run(color: ColorChoice) -> Result<()> {
             &cli,
             password.as_deref(),
             &budget,
+            &reporter,
         )?;
     }
     fs::rename(staging.path(), &output)
         .with_context(|| format!("无法保存到 {}", output.display()))?;
-    cli::extraction_finished(cli.color, &output, budget.written());
+    reporter.finished(&output, budget.written());
     Ok(())
 }
 
@@ -175,6 +175,7 @@ fn pipeline_layer(
     cli: &Cli,
     password: Option<&str>,
     budget: &Budget,
+    reporter: &Reporter,
 ) -> Result<()> {
     let LayerSource {
         input,
@@ -187,7 +188,15 @@ fn pipeline_layer(
     let completed = thread::scope(|scope| -> Result<Vec<CompletedLayer>> {
         let (sender, receiver) = sync_channel(1);
         let worker = scope.spawn(|| {
-            process_completed_files(receiver, workspace.path(), depth, cli, password, budget)
+            process_completed_files(
+                receiver,
+                workspace.path(),
+                depth,
+                cli,
+                password,
+                budget,
+                reporter,
+            )
         });
         let growing = RefCell::new(HashMap::<PathBuf, Arc<GrowingFile>>::new());
         let probes = RefCell::new(HashMap::<PathBuf, RarProbe>::new());
@@ -272,6 +281,7 @@ fn process_completed_files(
     cli: &Cli,
     password: Option<&str>,
     budget: &Budget,
+    reporter: &Reporter,
 ) -> Result<Vec<CompletedLayer>> {
     let mut completed = Vec::new();
     for item in receiver {
@@ -296,7 +306,7 @@ fn process_completed_files(
         let target = tempfile::Builder::new()
             .prefix(".acgdp-layer-")
             .tempdir_in(workspace)?;
-        cli::layer_started(cli.color, depth + 1, &file, format);
+        reporter.layer_started(depth + 1, &file, format);
         pipeline_layer(
             LayerSource {
                 input: &file,
@@ -308,6 +318,7 @@ fn process_completed_files(
             cli,
             password,
             budget,
+            reporter,
         )
         .with_context(|| format!("流水线解压失败：{}", file.display()))?;
         completed.push(CompletedLayer {
@@ -324,6 +335,7 @@ fn expand_nested(
     cli: &Cli,
     password: Option<&str>,
     budget: &Budget,
+    reporter: &Reporter,
 ) -> Result<()> {
     let mut files = Vec::new();
     for entry in WalkDir::new(root).follow_links(false) {
@@ -350,10 +362,10 @@ fn expand_nested(
         let target = tempfile::Builder::new()
             .prefix(".acgdp-layer-")
             .tempdir_in(parent)?;
-        cli::layer_started(cli.color, depth + 1, &file, format);
+        reporter.layer_started(depth + 1, &file, format);
         extract_one(&file, target.path(), format, password, budget)
             .with_context(|| format!("解压失败：{}", file.display()))?;
-        expand_nested(target.path(), depth + 1, cli, password, budget)?;
+        expand_nested(target.path(), depth + 1, cli, password, budget, reporter)?;
         merge_contents(target.path(), parent)?;
         if !cli.keep_intermediates {
             fs::remove_file(&file)?;
