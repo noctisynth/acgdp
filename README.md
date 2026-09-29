@@ -33,7 +33,7 @@ acgdp game.jpg --jobs 1
 acgdp game.7z.001 --ask-password
 ```
 
-`-p` is useful in scripts, but the password may appear in process arguments. Use `--ask-password` for an interactive Chinese prompt that keeps the cursor on the prompt line and hides the input without revealing its length. Unencrypted archives need no password.
+`-p` is useful in scripts, but the password may appear in process arguments. Use `--ask-password` for an interactive Chinese prompt with same-line masked input. The number of mask characters reveals the password length while typing; the completed prompt displays a fixed number of asterisks. Unencrypted archives need no password.
 
 Help, extraction progress, and errors use color in a terminal. Progress shows each layer's number, format, and archive name, followed by the output location, total bytes written, and elapsed time. A terminal also shows an activity spinner; redirected output has plain lines without an animated spinner. Set `--color always` to keep colors when redirecting output, or `--color never` to disable them; `auto` is the default.
 
