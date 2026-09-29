@@ -33,7 +33,7 @@ acgdp game.jpg --jobs 1
 acgdp game.7z.001 --ask-password
 ```
 
-`-p` is useful in scripts, but the password may appear in process arguments. Use `--ask-password` for interactive use. Unencrypted archives need no password.
+`-p` is useful in scripts, but the password may appear in process arguments. Use `--ask-password` for an interactive Chinese prompt with hidden input; its colors follow `--color`. Unencrypted archives need no password.
 
 Help, extraction progress, and errors use color in a terminal. Set `--color always` to keep colors when redirecting output, or `--color never` to disable them; `auto` is the default.
 

@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::fs;
+use std::io::IsTerminal;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -9,6 +10,7 @@ use std::thread;
 
 use anyhow::{Context, Result, bail};
 use clap::ColorChoice;
+use inquire::{Password, ui::RenderConfig};
 use walkdir::WalkDir;
 
 use crate::cli::{self, Cli};
@@ -30,7 +32,18 @@ pub(crate) fn run(color: ColorChoice) -> Result<()> {
         bail!("输入必须是文件：{}", input.display());
     }
     let password = if cli.ask_password {
-        Some(rpassword::prompt_password("压缩包密码：")?)
+        let render = if cli::terminal_color(cli.color, std::io::stdout().is_terminal()) {
+            RenderConfig::default_colored()
+        } else {
+            RenderConfig::empty()
+        };
+        Some(
+            Password::new("压缩包密码")
+                .without_confirmation()
+                .with_render_config(render)
+                .prompt()
+                .context("无法从终端读取密码")?,
+        )
     } else {
         cli.password.clone()
     };

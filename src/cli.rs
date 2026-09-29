@@ -77,7 +77,7 @@ pub(crate) fn parse_or_help(color: ColorChoice) -> Result<Option<Cli>> {
     Ok(Some(Cli::from_arg_matches(&matches)?))
 }
 
-fn terminal_color(choice: ColorChoice, terminal: bool) -> bool {
+pub(crate) fn terminal_color(choice: ColorChoice, terminal: bool) -> bool {
     match choice {
         ColorChoice::Always => true,
         ColorChoice::Never => false,
