@@ -17,7 +17,7 @@ use inquire::{
 use walkdir::WalkDir;
 
 use crate::cli::{self, Cli, LayerProgress, Reporter};
-use crate::detect::detect_format;
+use crate::detect::{detect_format, detect_format_bytes};
 use crate::extract::{
     Budget, GrowingFile, SevenZCallbacks, extract_growing_rar, extract_one,
     extract_one_with_callback, extract_sevenz_with_progress,
@@ -131,7 +131,7 @@ struct LayerSource<'a> {
 }
 
 enum WorkItem {
-    Completed(PathBuf),
+    Completed(PathBuf, Option<Vec<u8>>),
     GrowingRar(PathBuf, Arc<GrowingFile>),
 }
 
@@ -225,13 +225,13 @@ fn pipeline_layer(
         });
         let growing = RefCell::new(HashMap::<PathBuf, Arc<GrowingFile>>::new());
         let probes = RefCell::new(HashMap::<PathBuf, RarProbe>::new());
-        let mut on_file = |file: &Path| {
+        let mut on_file = |file: &Path, decoded: Option<Vec<u8>>| {
             probes.borrow_mut().remove(file);
             if let Some(state) = growing.borrow_mut().remove(file) {
                 state.finish(false)
             } else {
                 sender
-                    .send(WorkItem::Completed(file.to_path_buf()))
+                    .send(WorkItem::Completed(file.to_path_buf(), decoded))
                     .context("内层解压工作线程已停止")
             }
         };
@@ -294,7 +294,7 @@ fn pipeline_layer(
                 password,
                 budget,
                 layer_progress,
-                &mut on_file,
+                Some(&mut on_file),
             )
         };
         layer_progress.finish();
@@ -331,8 +331,13 @@ fn process_completed_files(
     let mut completed = Vec::new();
     for item in receiver {
         let (file, format, progress) = match item {
-            WorkItem::Completed(file) => {
-                let Some(format) = detect_format(&file, password)? else {
+            WorkItem::Completed(file, decoded) => {
+                let format = if let Some(bytes) = decoded {
+                    detect_format_bytes(&bytes, &file, password)?
+                } else {
+                    detect_format(&file, password)?
+                };
+                let Some(format) = format else {
                     continue;
                 };
                 (file, format, None)

@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{Cursor, Read, Seek, SeekFrom};
 use std::path::Path;
 
 use anyhow::Result;
@@ -15,32 +15,81 @@ pub(crate) enum Format {
     Rar,
 }
 
+struct ScanContext<'a> {
+    path: &'a Path,
+    password: Option<&'a str>,
+    end: u64,
+}
+
 pub(crate) fn detect_format(path: &Path, password: Option<&str>) -> Result<Option<Format>> {
+    detect_reader(File::open(path)?, path, password, || valid_zip(path))
+}
+
+pub(crate) fn detect_format_bytes(
+    bytes: &[u8],
+    path: &Path,
+    password: Option<&str>,
+) -> Result<Option<Format>> {
+    detect_reader(Cursor::new(bytes), path, password, || {
+        Ok(zip::ZipArchive::new(Cursor::new(bytes))
+            .ok()
+            .map(|archive| archive.offset()))
+    })
+}
+
+fn detect_reader<R, F>(
+    mut file: R,
+    path: &Path,
+    password: Option<&str>,
+    mut zip_offset: F,
+) -> Result<Option<Format>>
+where
+    R: Read + Seek,
+    F: FnMut() -> Result<Option<u64>>,
+{
     let mut first = [0u8; 8];
-    let n = File::open(path)?.read(&mut first)?;
-    if first[..n].starts_with(SEVEN_Z) && valid_7z_header(path, 0)? {
+    let n = file.read(&mut first)?;
+    if first[..n].starts_with(SEVEN_Z) && valid_7z_header(&mut file, 0)? {
         return Ok(Some(Format::SevenZ(0)));
     }
     if (first[..n].starts_with(RAR4) || first[..n].starts_with(RAR5))
-        && valid_rar_header(path, 0, password)?
+        && valid_rar_header(&mut file, path, 0, password)?
     {
         return Ok(Some(Format::Rar));
     }
-    let mut choices = Vec::new();
-    if let Ok(zip) = zip::ZipArchive::new(File::open(path)?) {
-        if zip.offset() == 0 {
-            return Ok(Some(Format::Zip));
-        }
-        choices.push((zip.offset(), Format::Zip));
+    if (first[..n].starts_with(b"PK\x03\x04") || first[..n].starts_with(b"PK\x05\x06"))
+        && zip_offset()? == Some(0)
+    {
+        return Ok(Some(Format::Zip));
     }
-    choices.extend(scan_signatures(path, password)?);
-    choices.sort_by_key(|(offset, _)| *offset);
-    Ok(choices.first().map(|(_, format)| *format))
+    let size = file.seek(SeekFrom::End(0))?;
+    file.seek(SeekFrom::Start(0))?;
+    let prechecked_zip = if size > 1024 * 1024 {
+        Some(zip_offset()?)
+    } else {
+        None
+    };
+    scan_signatures(&mut file, path, password, &mut zip_offset, prechecked_zip)
 }
 
-fn scan_signatures(path: &Path, password: Option<&str>) -> Result<Vec<(u64, Format)>> {
-    let mut file = File::open(path)?;
-    let mut found = Vec::new();
+fn valid_zip(path: &Path) -> Result<Option<u64>> {
+    Ok(zip::ZipArchive::new(File::open(path)?)
+        .ok()
+        .map(|archive| archive.offset()))
+}
+
+fn scan_signatures<R, F>(
+    file: &mut R,
+    path: &Path,
+    password: Option<&str>,
+    valid_zip: &mut F,
+    prechecked_zip: Option<Option<u64>>,
+) -> Result<Option<Format>>
+where
+    R: Read + Seek,
+    F: FnMut() -> Result<Option<u64>>,
+{
+    let mut zip_offset = prechecked_zip;
     let mut buffer = [0u8; 64 * 1024 + 8];
     let (mut carry, mut base) = (0usize, 0u64);
     loop {
@@ -49,28 +98,36 @@ fn scan_signatures(path: &Path, password: Option<&str>) -> Result<Vec<(u64, Form
             break;
         }
         let len = carry + n;
-        for i in memchr::memchr2_iter(SEVEN_Z[0], RAR4[0], &buffer[..len]) {
-            let tail = &buffer[i..len];
-            let format = if tail.starts_with(SEVEN_Z) {
-                Some(Format::SevenZ(base + i as u64))
-            } else if tail.starts_with(RAR4) || tail.starts_with(RAR5) {
-                Some(Format::Rar)
-            } else {
-                None
-            };
-            if let Some(format) = format {
-                let offset = base + i as u64;
-                let valid = match format {
-                    Format::SevenZ(_) => valid_7z_header(path, offset)?,
-                    Format::Rar => valid_rar_header(path, offset, password)?,
-                    Format::Zip => false,
-                };
-                if !valid {
-                    continue;
+        let end = base + len as u64;
+        let context = ScanContext {
+            path,
+            password,
+            end,
+        };
+        if prechecked_zip.is_some() {
+            for i in memchr::memchr2_iter(SEVEN_Z[0], RAR4[0], &buffer[..len]) {
+                if let Some(format) = check_candidate(
+                    file,
+                    &context,
+                    valid_zip,
+                    &mut zip_offset,
+                    &buffer[i..len],
+                    base + i as u64,
+                )? {
+                    return Ok(Some(format));
                 }
-                found.push((offset, format));
-                if found.len() >= 16 {
-                    return Ok(found);
+            }
+        } else {
+            for i in memchr::memchr3_iter(SEVEN_Z[0], RAR4[0], b'P', &buffer[..len]) {
+                if let Some(format) = check_candidate(
+                    file,
+                    &context,
+                    valid_zip,
+                    &mut zip_offset,
+                    &buffer[i..len],
+                    base + i as u64,
+                )? {
+                    return Ok(Some(format));
                 }
             }
         }
@@ -78,11 +135,53 @@ fn scan_signatures(path: &Path, password: Option<&str>) -> Result<Vec<(u64, Form
         buffer.copy_within(len - carry..len, 0);
         base += (len - carry) as u64;
     }
-    Ok(found)
+    Ok(zip_offset.flatten().map(|_| Format::Zip))
 }
 
-fn valid_7z_header(path: &Path, offset: u64) -> Result<bool> {
-    let mut file = File::open(path)?;
+fn check_candidate<R, F>(
+    file: &mut R,
+    context: &ScanContext<'_>,
+    valid_zip: &mut F,
+    zip_offset: &mut Option<Option<u64>>,
+    tail: &[u8],
+    offset: u64,
+) -> Result<Option<Format>>
+where
+    R: Read + Seek,
+    F: FnMut() -> Result<Option<u64>>,
+{
+    if zip_offset.is_none() && is_zip_signature(tail) {
+        *zip_offset = Some(valid_zip()?);
+    }
+    if zip_offset.is_some_and(|candidate| candidate.is_some_and(|zip| zip <= offset)) {
+        return Ok(Some(Format::Zip));
+    }
+    let format = if tail.starts_with(SEVEN_Z) {
+        Some(Format::SevenZ(offset))
+    } else if tail.starts_with(RAR4) || tail.starts_with(RAR5) {
+        Some(Format::Rar)
+    } else {
+        None
+    };
+    let valid = match format {
+        Some(Format::SevenZ(_)) => valid_7z_header(file, offset)?,
+        Some(Format::Rar) => valid_rar_header(file, context.path, offset, context.password)?,
+        _ => false,
+    };
+    if format.is_some() {
+        file.seek(SeekFrom::Start(context.end))?;
+    }
+    Ok(valid.then_some(format).flatten())
+}
+
+fn is_zip_signature(bytes: &[u8]) -> bool {
+    bytes.starts_with(b"PK\x03\x04")
+        || bytes.starts_with(b"PK\x05\x06")
+        || bytes.starts_with(b"PK\x06\x06")
+        || bytes.starts_with(b"PK\x06\x07")
+}
+
+fn valid_7z_header<R: Read + Seek>(file: &mut R, offset: u64) -> Result<bool> {
     file.seek(SeekFrom::Start(offset))?;
     let mut header = [0u8; 32];
     if file.read_exact(&mut header).is_err() || !header.starts_with(SEVEN_Z) {
@@ -92,15 +191,19 @@ fn valid_7z_header(path: &Path, offset: u64) -> Result<bool> {
     Ok(crc32fast::hash(&header[12..32]) == expected)
 }
 
-fn valid_rar_header(path: &Path, offset: u64, password: Option<&str>) -> Result<bool> {
-    let mut file = File::open(path)?;
+fn valid_rar_header<R: Read + Seek>(
+    file: &mut R,
+    path: &Path,
+    offset: u64,
+    password: Option<&str>,
+) -> Result<bool> {
     file.seek(SeekFrom::Start(offset))?;
     let mut signature = [0u8; 8];
     if file.read_exact(&mut signature).is_err() {
         return Ok(false);
     }
     if signature.starts_with(RAR5) {
-        return valid_rar5_block(&mut file);
+        return valid_rar5_block(file);
     }
     if !signature.starts_with(RAR4) {
         return Ok(false);
@@ -113,7 +216,7 @@ fn valid_rar_header(path: &Path, offset: u64, password: Option<&str>) -> Result<
     Ok(archive.open_for_processing().is_ok())
 }
 
-fn valid_rar5_block(file: &mut File) -> Result<bool> {
+fn valid_rar5_block<R: Read>(file: &mut R) -> Result<bool> {
     let mut checksum = [0u8; 4];
     if file.read_exact(&mut checksum).is_err() {
         return Ok(false);

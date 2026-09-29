@@ -39,6 +39,8 @@ Help, extraction progress, and errors use color in a terminal. Progress shows ea
 
 By default, `--jobs 2` passes completed inner archives to the next worker at every nesting level, allowing multiple layers to overlap. When a 7z member contains a non-solid RAR, the next layer can extract complete RAR entries while that member is still being written. Other format combinations start after the inner file is complete. Use `--jobs 1` for the serial path. `--jobs 2` enables the pipeline and may create a stage at each nested level; it does not cap the process at two threads. The speedup depends on the archive layout and storage device.
 
+For RAR members up to 1 MiB, the pipeline reuses decoded bytes to look for another archive. This avoids rereading large numbers of small files immediately after writing them. It still checks each file's full contents, including archives hidden inside images.
+
 ## Behavior and limits
 
 - Takes one input file and ignores its extension. ZIP and 7z use Rust libraries; RAR uses `unrar-ng`, which includes RARLAB's UnRAR C/C++ code.
@@ -58,4 +60,4 @@ cargo bench --bench nested_extraction -- --noplot
 
 The smoke test covers nested ZIPs, ZIP/7z/RAR appended to images, RAR3/RAR5, encrypted ZIP/7z, and cleanup on failure. The 7z and encrypted ZIP cases require 7-Zip installed locally; the other tests do not. Two RAR fixtures in `tests/fixtures` come from [RAR Test Files](https://github.com/ssokolow/rar-test-files) under CC0. A RAR fixture used to check symbolic link rejection comes from the [libarchive test suite](https://github.com/libarchive/libarchive/blob/master/libarchive/test/test_read_format_rar.rar.uu).
 
-The Criterion benchmark compares `--jobs 1` and `--jobs 2` on generated ZIP fixtures with multiple inner archives, a single chain, and four nested layers. Use `python tests/compare_pipeline.py <baseline> <candidate>` to interleave runs of two binaries. See [benchmark notes](.agents/spikes/0001-pipeline-benchmark.md) for the measured results and limits. A single-run comparison on a real split 7z→RAR5 archive is in the [sample validation](.agents/spikes/0002-real-split-archive.md); results varied between runs, so speedups are not guaranteed.
+The Criterion benchmark compares `--jobs 1` and `--jobs 2` on generated ZIP fixtures with multiple inner archives, a single chain, and four nested layers. Use `python tests/compare_pipeline.py <baseline> <candidate>` to interleave runs of two binaries. See [benchmark notes](.agents/spikes/0001-pipeline-benchmark.md) for the measured results and limits. The real split 7z→RAR5 sample is documented in [sample validation](.agents/spikes/0002-real-split-archive.md) and [small-file detection optimization](.agents/spikes/0006-small-rar-detection.md); results varied between runs, so speedups are not guaranteed.

@@ -15,9 +15,10 @@ use anyhow::{Result, bail};
 use crate::detect::Format;
 
 type ProgressCallback<'a> = dyn FnMut(&Path, &[u8], u64) -> Result<()> + 'a;
+pub(crate) type FileCallback<'a> = dyn FnMut(&Path, Option<Vec<u8>>) -> Result<()> + 'a;
 
 pub(crate) struct SevenZCallbacks<'a> {
-    pub(crate) on_file: &'a mut dyn FnMut(&Path) -> Result<()>,
+    pub(crate) on_file: &'a mut FileCallback<'a>,
     pub(crate) on_progress: &'a mut ProgressCallback<'a>,
 }
 
@@ -66,15 +67,7 @@ pub(crate) fn extract_one(
     budget: &Budget,
     progress: &dyn Progress,
 ) -> Result<()> {
-    extract_one_with_callback(
-        source,
-        dest,
-        format,
-        password,
-        budget,
-        progress,
-        &mut |_| Ok(()),
-    )
+    extract_one_with_callback(source, dest, format, password, budget, progress, None)
 }
 
 pub(crate) fn extract_one_with_callback(
@@ -84,14 +77,25 @@ pub(crate) fn extract_one_with_callback(
     password: Option<&str>,
     budget: &Budget,
     progress: &dyn Progress,
-    on_file: &mut dyn FnMut(&Path) -> Result<()>,
+    on_file: Option<&mut FileCallback<'_>>,
 ) -> Result<()> {
+    let capture_small_rar = on_file.is_some();
+    let mut noop = |_: &Path, _: Option<Vec<u8>>| Ok(());
+    let on_file = on_file.unwrap_or(&mut noop);
     match format {
         Format::Zip => zip::extract(source, dest, password, budget, progress, on_file),
         Format::SevenZ(offset) => {
             sevenz::extract(source, dest, offset, password, budget, progress, on_file)
         }
-        Format::Rar => rar::extract(source, dest, password, budget, progress, on_file),
+        Format::Rar => rar::extract(
+            source,
+            dest,
+            password,
+            budget,
+            progress,
+            capture_small_rar,
+            on_file,
+        ),
     }
 }
 
@@ -114,7 +118,7 @@ pub(crate) fn extract_growing_rar(
     budget: &Budget,
     growing: &GrowingFile,
     progress: &dyn Progress,
-    on_file: &mut dyn FnMut(&Path) -> Result<()>,
+    on_file: &mut FileCallback<'_>,
 ) -> Result<()> {
     rar::extract_growing(source, dest, password, budget, growing, progress, on_file)
 }

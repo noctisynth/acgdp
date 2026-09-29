@@ -5,7 +5,8 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 
 use super::{
-    Budget, Progress, SevenZCallbacks, copy_limited_with_progress, safe_path, volume::VolumeReader,
+    Budget, FileCallback, Progress, SevenZCallbacks, copy_limited_with_progress, safe_path,
+    volume::VolumeReader,
 };
 
 pub(super) fn extract(
@@ -15,7 +16,7 @@ pub(super) fn extract(
     password: Option<&str>,
     budget: &Budget,
     progress: &dyn Progress,
-    on_file: &mut dyn FnMut(&Path) -> Result<()>,
+    on_file: &mut FileCallback<'_>,
 ) -> Result<()> {
     extract_with_progress(
         source,
@@ -80,7 +81,7 @@ pub(super) fn extract_with_progress(
                     &target,
                     on_progress,
                 )?;
-                on_file(&target)?;
+                on_file(&target, None)?;
             }
             Ok(())
         })();

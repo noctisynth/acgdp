@@ -3,7 +3,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 
-use super::{Budget, Progress, copy_limited, safe_path};
+use super::{Budget, FileCallback, Progress, copy_limited, safe_path};
 
 pub(super) fn extract(
     source: &Path,
@@ -11,7 +11,7 @@ pub(super) fn extract(
     password: Option<&str>,
     budget: &Budget,
     progress: &dyn Progress,
-    on_file: &mut dyn FnMut(&Path) -> Result<()>,
+    on_file: &mut FileCallback<'_>,
 ) -> Result<()> {
     let mut archive = zip::ZipArchive::new(File::open(source)?)?;
     if progress.is_visible() {
@@ -52,7 +52,7 @@ pub(super) fn extract(
             bail!("ZIP 含重复或冲突路径：{}", target.display());
         }
         copy_limited(&mut entry, &mut File::create(&target)?, budget, progress)?;
-        on_file(&target)?;
+        on_file(&target, None)?;
     }
     Ok(())
 }

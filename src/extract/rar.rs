@@ -1,10 +1,13 @@
-use std::fs;
+use std::fs::{self, File};
+use std::io::Write;
 use std::path::Path;
 use std::sync::{Condvar, Mutex};
 
 use anyhow::{Context, Result, bail};
 
-use super::{Budget, Progress, safe_path};
+use super::{Budget, FileCallback, Progress, safe_path};
+
+const MEMORY_ENTRY_LIMIT: u64 = 1024 * 1024;
 
 pub(crate) struct GrowingFile {
     state: Mutex<GrowingState>,
@@ -82,7 +85,8 @@ pub(super) fn extract(
     password: Option<&str>,
     budget: &Budget,
     progress: &dyn Progress,
-    on_file: &mut dyn FnMut(&Path) -> Result<()>,
+    capture_small: bool,
+    on_file: &mut FileCallback<'_>,
 ) -> Result<()> {
     let archive = if let Some(pw) = password {
         unrar_ng::Archive::with_password(source, pw)
@@ -112,15 +116,30 @@ pub(super) fn extract(
             if target.exists() {
                 bail!("RAR 含重复或冲突路径：{}", target.display());
             }
-            archive = entry
-                .extract_to(&target)
-                .with_context(|| format!("RAR 条目解压失败：{}", target.display()))?;
-            let size = fs::metadata(&target)
-                .with_context(|| format!("RAR 报告成功但未找到输出文件：{}", target.display()))?
-                .len();
-            budget.charge(size)?;
+            let (size, decoded) = if capture_small && header.unpacked_size <= MEMORY_ENTRY_LIMIT {
+                let (bytes, next) = entry
+                    .read()
+                    .with_context(|| format!("RAR 条目解压失败：{}", target.display()))?;
+                if bytes.len() as u64 > MEMORY_ENTRY_LIMIT {
+                    bail!("RAR 条目超过内存读取阈值：{}", target.display());
+                }
+                let size = bytes.len() as u64;
+                budget.charge(size)?;
+                File::create(&target)?.write_all(&bytes)?;
+                archive = next;
+                (size, Some(bytes))
+            } else {
+                archive = entry
+                    .extract_to(&target)
+                    .with_context(|| format!("RAR 条目解压失败：{}", target.display()))?;
+                let size = fs::metadata(&target)
+                    .with_context(|| format!("RAR 报告成功但未找到输出文件：{}", target.display()))?
+                    .len();
+                budget.charge(size)?;
+                (size, None)
+            };
             progress.advance(size);
-            on_file(&target)?;
+            on_file(&target, decoded)?;
         }
     }
     Ok(())
@@ -133,7 +152,7 @@ pub(super) fn extract_growing(
     budget: &Budget,
     growing: &GrowingFile,
     progress: &dyn Progress,
-    on_file: &mut dyn FnMut(&Path) -> Result<()>,
+    on_file: &mut FileCallback<'_>,
 ) -> Result<()> {
     let mut completed = 0usize;
     let mut checked_size = 0u64;
@@ -155,7 +174,7 @@ pub(super) fn extract_growing(
         };
         if archive.is_solid() {
             if done {
-                return extract(source, dest, password, budget, progress, on_file);
+                return extract(source, dest, password, budget, progress, true, on_file);
             }
             continue;
         }
@@ -214,24 +233,49 @@ pub(super) fn extract_growing(
                 if target.exists() {
                     bail!("RAR 含重复或冲突路径：{}", target.display());
                 }
-                archive = match entry.extract_to(&target) {
-                    Ok(next) => next,
-                    Err(error) if !done => {
-                        if target.exists() {
-                            fs::remove_file(&target)?;
+                if header.unpacked_size <= MEMORY_ENTRY_LIMIT {
+                    let (bytes, next) = match entry.read() {
+                        Ok(value) => value,
+                        Err(error) if !done => {
+                            let _ = error;
+                            break;
                         }
-                        let _ = error;
-                        break;
+                        Err(error) => {
+                            return Err(error).with_context(|| {
+                                format!("RAR 条目解压失败：{}", target.display())
+                            });
+                        }
+                    };
+                    if bytes.len() as u64 > MEMORY_ENTRY_LIMIT {
+                        bail!("RAR 条目超过内存读取阈值：{}", target.display());
                     }
-                    Err(error) => {
-                        return Err(error)
-                            .with_context(|| format!("RAR 条目解压失败：{}", target.display()));
-                    }
-                };
-                let size = fs::metadata(&target)?.len();
-                budget.charge(size)?;
-                progress.advance(size);
-                on_file(&target)?;
+                    let size = bytes.len() as u64;
+                    budget.charge(size)?;
+                    File::create(&target)?.write_all(&bytes)?;
+                    archive = next;
+                    progress.advance(size);
+                    on_file(&target, Some(bytes))?;
+                } else {
+                    archive = match entry.extract_to(&target) {
+                        Ok(next) => next,
+                        Err(error) if !done => {
+                            if target.exists() {
+                                fs::remove_file(&target)?;
+                            }
+                            let _ = error;
+                            break;
+                        }
+                        Err(error) => {
+                            return Err(error).with_context(|| {
+                                format!("RAR 条目解压失败：{}", target.display())
+                            });
+                        }
+                    };
+                    let size = fs::metadata(&target)?.len();
+                    budget.charge(size)?;
+                    progress.advance(size);
+                    on_file(&target, None)?;
+                }
             }
             index += 1;
             completed = index;
