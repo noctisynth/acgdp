@@ -16,9 +16,10 @@ github-release = true
 
 [resolver.rust.pre-check]
 url = "https://crates.io/api/v1/crates/{{ package.name }}/{{ package.version }}"
+type = "http"
 
 [resolver.rust.pre-check.extra-headers]
-User-Agent = "Semifold 0.2.8"
+User-Agent = "Semifold 0.3.4"
 
 [[resolver.rust.publish]]
 command = "cargo"
@@ -30,4 +31,4 @@ args = [
     "generate-lockfile",
     "--offline",
 ]
-dry_run = true
+dry-run = true

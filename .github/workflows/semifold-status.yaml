@@ -20,6 +20,8 @@ jobs:
         uses: actions/checkout@v5
       - name: Setup Semifold
         uses: noctisynth/setup-semifold@main
+        with:
+          version: "0.3.4"
       - name: Semifold Status
         run: semifold status
         env:

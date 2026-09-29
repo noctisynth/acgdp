@@ -40,6 +40,6 @@ Draft RFC 不构成实现依据；不需要 RFC 的局部重构可以直接按�
 
 ## 5. 版本与提交
 
-- Semifold 使用 `.changes/config.toml`；基础分支为 `main`，发布分支为 `release`。完成每个独立部分后创建新的 changeset，运行 `smif status`，再将变更与 changeset 一起提交 Git。
+- Semifold 使用 `.changes/config.toml`；基础分支为 `main`，发布分支为 `release`。统一使用 `semifold` CLI，不使用旧版 `smif`。完成每个独立部分后用 `semifold commit` 创建新的 changeset，运行 `semifold status`，再将变更与 changeset 一起提交 Git。
 - 不改写已有 changeset。Git 提交、版本提升、crates.io 发布和 GitHub Release 是不同操作；发布条件见 [发布 Spec](.agents/specs/release.md)。
 - 交付时说明改动、验证结果，以及相对现有设计是否发生变化；未完成事项保留在对应实施清单。

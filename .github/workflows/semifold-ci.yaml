@@ -22,6 +22,8 @@ jobs:
           fetch-depth: 0
       - name: Setup Semifold
         uses: noctisynth/setup-semifold@main
+        with:
+          version: "0.3.4"
       - name: Semifold CI
         run: semifold ci
         env:

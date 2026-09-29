@@ -15,5 +15,6 @@
 ## 版本与发行
 
 - [x] 配置 Semifold changeset、Rust resolver、GitHub Release 和 GitHub Actions 工作流。
+- [ ] 将旧版 Semifold 配置迁移到 0.3.4，并确认线上 CI 能通过配置解析与发布 PR 准备阶段。
 - [ ] 配置 crates.io 发布令牌，执行首次发布演练并核对 GitHub Actions 权限和结果。
 - [ ] 为 GitHub Release 配置、构建并验证多平台预编译二进制资产。
