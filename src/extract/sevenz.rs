@@ -11,7 +11,8 @@ pub(super) fn extract(
     dest: &Path,
     offset: u64,
     password: Option<&str>,
-    budget: &mut Budget,
+    budget: &Budget,
+    on_file: &mut dyn FnMut(&Path) -> Result<()>,
 ) -> Result<()> {
     let reader = OffsetReader::new(File::open(source)?, offset)?;
     let mut failure = None;
@@ -24,7 +25,11 @@ pub(super) fn extract(
                 if let Some(parent) = target.parent() {
                     fs::create_dir_all(parent)?;
                 }
-                copy_limited(reader, &mut File::create(target)?, budget)?;
+                if target.exists() {
+                    bail!("7z 含重复或冲突路径：{}", target.display());
+                }
+                copy_limited(reader, &mut File::create(&target)?, budget)?;
+                on_file(&target)?;
             }
             Ok(())
         })();

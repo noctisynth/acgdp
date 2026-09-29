@@ -5,23 +5,39 @@ mod zip;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Result, bail};
 
 use crate::detect::Format;
 
 pub(crate) struct Budget {
-    pub(crate) remaining: u64,
-    pub(crate) written: u64,
+    limit: u64,
+    remaining: AtomicU64,
 }
 
 impl Budget {
-    pub(crate) fn charge(&mut self, n: u64) -> Result<()> {
-        if n > self.remaining {
-            bail!("超过累计解压大小限制；可用 --max-gib 调整");
+    pub(crate) fn new(limit: u64) -> Self {
+        Self {
+            limit,
+            remaining: AtomicU64::new(limit),
         }
-        self.remaining -= n;
-        self.written += n;
+    }
+
+    pub(crate) fn remaining(&self) -> u64 {
+        self.remaining.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn written(&self) -> u64 {
+        self.limit - self.remaining()
+    }
+
+    pub(crate) fn charge(&self, n: u64) -> Result<()> {
+        self.remaining
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |remaining| {
+                remaining.checked_sub(n)
+            })
+            .map_err(|_| anyhow::anyhow!("超过累计解压大小限制；可用 --max-gib 调整"))?;
         Ok(())
     }
 }
@@ -31,12 +47,23 @@ pub(crate) fn extract_one(
     dest: &Path,
     format: Format,
     password: Option<&str>,
-    budget: &mut Budget,
+    budget: &Budget,
+) -> Result<()> {
+    extract_one_with_callback(source, dest, format, password, budget, &mut |_| Ok(()))
+}
+
+pub(crate) fn extract_one_with_callback(
+    source: &Path,
+    dest: &Path,
+    format: Format,
+    password: Option<&str>,
+    budget: &Budget,
+    on_file: &mut dyn FnMut(&Path) -> Result<()>,
 ) -> Result<()> {
     match format {
-        Format::Zip => zip::extract(source, dest, password, budget),
-        Format::SevenZ(offset) => sevenz::extract(source, dest, offset, password, budget),
-        Format::Rar => rar::extract(source, dest, password, budget),
+        Format::Zip => zip::extract(source, dest, password, budget, on_file),
+        Format::SevenZ(offset) => sevenz::extract(source, dest, offset, password, budget, on_file),
+        Format::Rar => rar::extract(source, dest, password, budget, on_file),
     }
 }
 
@@ -55,7 +82,7 @@ fn safe_path(name: &Path) -> Result<PathBuf> {
     Ok(result)
 }
 
-fn copy_limited(reader: &mut dyn Read, output: &mut File, budget: &mut Budget) -> Result<()> {
+fn copy_limited(reader: &mut dyn Read, output: &mut File, budget: &Budget) -> Result<()> {
     let mut buffer = [0u8; 64 * 1024];
     loop {
         let n = reader.read(&mut buffer)?;
@@ -66,4 +93,26 @@ fn copy_limited(reader: &mut dyn Read, output: &mut File, budget: &mut Budget) -
         output.write_all(&buffer[..n])?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Budget;
+
+    #[test]
+    fn concurrent_writes_cannot_exceed_global_limit() {
+        let budget = Budget::new(1_000);
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                scope.spawn(|| {
+                    for _ in 0..200 {
+                        let _ = budget.charge(1);
+                    }
+                });
+            }
+        });
+        assert_eq!(budget.written(), 1_000);
+        assert_eq!(budget.remaining(), 0);
+        assert!(budget.charge(1).is_err());
+    }
 }

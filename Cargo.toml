@@ -16,3 +16,10 @@ tempfile = "3"
 unrar-ng = "0.7.7"
 walkdir = "2.5"
 zip = { version = "8.6", default-features = false, features = ["aes-crypto", "bzip2", "deflate64", "deflate-flate2-zlib-rs", "lzma", "ppmd", "xz", "zstd"] }
+
+[dev-dependencies]
+criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "nested_extraction"
+harness = false

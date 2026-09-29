@@ -18,6 +18,9 @@ pub(crate) enum Format {
 pub(crate) fn detect_format(path: &Path) -> Result<Option<Format>> {
     let mut choices = Vec::new();
     if let Ok(zip) = zip::ZipArchive::new(File::open(path)?) {
+        if zip.offset() == 0 {
+            return Ok(Some(Format::Zip));
+        }
         choices.push((zip.offset(), Format::Zip));
     }
     choices.extend(scan_signatures(path)?);

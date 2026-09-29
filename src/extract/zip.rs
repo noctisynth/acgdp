@@ -9,7 +9,8 @@ pub(super) fn extract(
     source: &Path,
     dest: &Path,
     password: Option<&str>,
-    budget: &mut Budget,
+    budget: &Budget,
+    on_file: &mut dyn FnMut(&Path) -> Result<()>,
 ) -> Result<()> {
     let mut archive = zip::ZipArchive::new(File::open(source)?)?;
     for i in 0..archive.len() {
@@ -34,7 +35,11 @@ pub(super) fn extract(
         if let Some(parent) = target.parent() {
             fs::create_dir_all(parent)?;
         }
-        copy_limited(&mut entry, &mut File::create(target)?, budget)?;
+        if target.exists() {
+            bail!("ZIP 含重复或冲突路径：{}", target.display());
+        }
+        copy_limited(&mut entry, &mut File::create(&target)?, budget)?;
+        on_file(&target)?;
     }
     Ok(())
 }

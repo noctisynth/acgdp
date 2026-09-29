@@ -1,5 +1,8 @@
 use std::fs;
 use std::path::Path;
+use std::path::PathBuf;
+use std::sync::mpsc::{Receiver, sync_channel};
+use std::thread;
 
 use anyhow::{Context, Result, bail};
 use clap::ColorChoice;
@@ -7,7 +10,7 @@ use walkdir::WalkDir;
 
 use crate::cli::{self, Cli};
 use crate::detect::detect_format;
-use crate::extract::{Budget, extract_one};
+use crate::extract::{Budget, extract_one, extract_one_with_callback};
 
 pub(crate) fn run(color: ColorChoice) -> Result<()> {
     let Some(cli) = cli::parse_or_help(color)? else {
@@ -42,27 +45,108 @@ pub(crate) fn run(color: ColorChoice) -> Result<()> {
     let staging = tempfile::Builder::new()
         .prefix(".acgdp-")
         .tempdir_in(parent)?;
-    let mut budget = Budget {
-        remaining: cli
-            .max_gib
+    let budget = Budget::new(
+        cli.max_gib
             .checked_mul(1024 * 1024 * 1024)
             .context("--max-gib 数值过大")?,
-        written: 0,
-    };
+    );
     let format = detect_format(&input)?.context("输入文件未识别为 ZIP、7z 或 RAR")?;
     cli::extraction_started(cli.color, &input, format);
-    extract_one(
-        &input,
-        staging.path(),
-        format,
-        password.as_deref(),
-        &mut budget,
-    )?;
-    expand_nested(staging.path(), 1, &cli, password.as_deref(), &mut budget)?;
+    if cli.jobs == 1 {
+        extract_one(&input, staging.path(), format, password.as_deref(), &budget)?;
+        expand_nested(staging.path(), 1, &cli, password.as_deref(), &budget)?;
+    } else {
+        pipeline_first_layer(
+            &input,
+            staging.path(),
+            format,
+            &cli,
+            password.as_deref(),
+            &budget,
+        )?;
+    }
     fs::rename(staging.path(), &output)
         .with_context(|| format!("无法保存到 {}", output.display()))?;
-    cli::extraction_finished(cli.color, &output, budget.written);
+    cli::extraction_finished(cli.color, &output, budget.written());
     Ok(())
+}
+
+struct CompletedLayer {
+    source: PathBuf,
+    output: tempfile::TempDir,
+}
+
+fn pipeline_first_layer(
+    input: &Path,
+    staging: &Path,
+    format: crate::detect::Format,
+    cli: &Cli,
+    password: Option<&str>,
+    budget: &Budget,
+) -> Result<()> {
+    let workspace = tempfile::Builder::new()
+        .prefix(".acgdp-work-")
+        .tempdir_in(staging.parent().context("无法确定临时目录父路径")?)?;
+    let completed = thread::scope(|scope| -> Result<Vec<CompletedLayer>> {
+        let (sender, receiver) = sync_channel(1);
+        let worker = scope
+            .spawn(|| process_completed_files(receiver, workspace.path(), cli, password, budget));
+        let extraction =
+            extract_one_with_callback(input, staging, format, password, budget, &mut |file| {
+                sender
+                    .send(file.to_path_buf())
+                    .context("内层解压工作线程已停止")
+            });
+        drop(sender);
+        let processed = worker
+            .join()
+            .map_err(|_| anyhow::anyhow!("内层解压工作线程异常退出"))?;
+        let completed = processed?;
+        extraction?;
+        Ok(completed)
+    })?;
+    for layer in completed {
+        let parent = layer.source.parent().context("无法确定内层压缩包的位置")?;
+        merge_contents(layer.output.path(), parent)?;
+        if !cli.keep_intermediates {
+            fs::remove_file(&layer.source)?;
+        }
+    }
+    Ok(())
+}
+
+fn process_completed_files(
+    receiver: Receiver<PathBuf>,
+    workspace: &Path,
+    cli: &Cli,
+    password: Option<&str>,
+    budget: &Budget,
+) -> Result<Vec<CompletedLayer>> {
+    let mut completed = Vec::new();
+    for file in receiver {
+        let Some(format) = detect_format(&file)? else {
+            continue;
+        };
+        if cli.max_depth <= 1 {
+            bail!(
+                "达到 --max-depth={}，但仍有嵌套压缩包：{}",
+                cli.max_depth,
+                file.display()
+            );
+        }
+        let target = tempfile::Builder::new()
+            .prefix(".acgdp-layer-")
+            .tempdir_in(workspace)?;
+        cli::layer_started(cli.color, 2, &file, format);
+        extract_one(&file, target.path(), format, password, budget)
+            .with_context(|| format!("解压失败：{}", file.display()))?;
+        expand_nested(target.path(), 2, cli, password, budget)?;
+        completed.push(CompletedLayer {
+            source: file,
+            output: target,
+        });
+    }
+    Ok(completed)
 }
 
 fn expand_nested(
@@ -70,7 +154,7 @@ fn expand_nested(
     depth: usize,
     cli: &Cli,
     password: Option<&str>,
-    budget: &mut Budget,
+    budget: &Budget,
 ) -> Result<()> {
     let mut files = Vec::new();
     for entry in WalkDir::new(root).follow_links(false) {

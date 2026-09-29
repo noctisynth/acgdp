@@ -20,7 +20,8 @@ pub(super) fn extract(
     source: &Path,
     dest: &Path,
     password: Option<&str>,
-    budget: &mut Budget,
+    budget: &Budget,
+    on_file: &mut dyn FnMut(&Path) -> Result<()>,
 ) -> Result<()> {
     let archive = if let Some(pw) = password {
         unrar_ng::Archive::with_password(source, pw)
@@ -38,7 +39,7 @@ pub(super) fn extract(
             fs::create_dir_all(target)?;
             archive = entry.skip()?;
         } else {
-            if header.unpacked_size > budget.remaining {
+            if header.unpacked_size > budget.remaining() {
                 bail!(
                     "RAR 条目超过累计解压大小限制：{}",
                     header.filename.display()
@@ -47,6 +48,9 @@ pub(super) fn extract(
             if let Some(parent) = target.parent() {
                 fs::create_dir_all(parent)?;
             }
+            if target.exists() {
+                bail!("RAR 含重复或冲突路径：{}", target.display());
+            }
             archive = entry
                 .extract_to(&target)
                 .with_context(|| format!("RAR 条目解压失败：{}", target.display()))?;
@@ -54,6 +58,7 @@ pub(super) fn extract(
                 .with_context(|| format!("RAR 报告成功但未找到输出文件：{}", target.display()))?
                 .len();
             budget.charge(size)?;
+            on_file(&target)?;
         }
     }
     Ok(())

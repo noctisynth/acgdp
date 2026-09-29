@@ -72,6 +72,20 @@ try:
     assert not (output / "inner.jpg").exists()
     assert (output / "result.txt").read_bytes() == b"finished"
 
+    run(outer, "--jobs", "1", "-o", base / "serial")
+    assert (base / "serial" / "result.txt").read_bytes() == b"finished"
+
+    siblings = base / "siblings.zip"
+    siblings.write_bytes(make_zip({
+        "one.jpg": make_zip({"one.txt": b"one"}),
+        "two.png": make_zip({"two.txt": b"two"}),
+        "plain.txt": b"plain",
+    }))
+    run(siblings)
+    assert (base / "siblings.zip.extracted" / "one.txt").read_bytes() == b"one"
+    assert (base / "siblings.zip.extracted" / "two.txt").read_bytes() == b"two"
+    assert (base / "siblings.zip.extracted" / "plain.txt").read_bytes() == b"plain"
+
     run(outer, "--keep-intermediates", "-o", base / "kept")
     assert (base / "kept" / "inner.jpg").is_file()
 
@@ -134,6 +148,16 @@ try:
         )
         run(protected_zip, "-p", "secret")
         assert (base / "locked.zip.extracted" / "seven.txt").read_bytes() == b"7z payload"
+
+        nested_locked = base / "nested-locked.zip"
+        nested_locked.write_bytes(make_zip({"locked.jpg": protected_zip.read_bytes(), "note.txt": b"note"}))
+        run(nested_locked, "-p", "secret")
+        assert (base / "nested-locked.zip.extracted" / "seven.txt").read_bytes() == b"7z payload"
+        nested_failed = subprocess.run(
+            [str(ACGDP), str(nested_locked), "-p", "wrong", "-o", str(base / "nested-failed")],
+            capture_output=True,
+        )
+        assert nested_failed.returncode != 0 and not (base / "nested-failed").exists()
 
         bad = subprocess.run([str(ACGDP), str(protected_zip), "-p", "wrong", "-o", str(base / "failed")], capture_output=True)
         assert bad.returncode != 0
