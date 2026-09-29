@@ -18,7 +18,7 @@
 
 Semifold 配置位于 [`.changes/config.toml`](../../.changes/config.toml)，包键为 `acgdp`，Rust resolver 使用 `cargo publish`。每完成一个独立部分，用 `semifold commit` 创建新的 changeset、运行 `semifold status` 核对版本计划，再把实现、规范、清单和 changeset 一起提交 Git。现有 changeset 不改写。
 
-项目统一使用 `semifold` CLI 0.3.4；本机另有旧 `smif` 0.2.8，不能用于生成本项目配置或 changeset。CI 的 setup-semifold 明确安装 0.3.4，与本地验证版本一致。配置中的 Rust HTTP pre-check 必须声明 `type = "http"`，命令选项使用 `dry-run` 键；旧格式由 `semifold config migrate` 迁移。`semifold status` 只是预览，不修改包版本。版本提升、Git 推送、registry 发布和 GitHub Release 分别处理，不因提交 changeset 就宣称已经发布。
+项目统一使用 `semifold` CLI 0.3.4；本机另有旧 `smif` 0.2.8，不能用于生成本项目配置或 changeset。CI 的 setup-semifold 明确安装 0.3.4，与本地验证版本一致。配置中的 Rust HTTP pre-check 必须声明 `type = "http"`，命令选项使用 `dry-run` 键；旧格式由 `semifold config migrate` 迁移。发布准备时使用联网的 `cargo generate-lockfile`，因为全新 CI 环境尚无离线依赖索引。`semifold status` 只是预览，不修改包版本。版本提升、Git 推送、registry 发布和 GitHub Release 分别处理，不因提交 changeset 就宣称已经发布。
 
 ## 3. CI 与发布边界
 
