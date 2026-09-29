@@ -20,10 +20,23 @@ jobs:
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
+      - name: Resolve latest Semifold 0.3.x
+        id: semifold-version
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version="$(gh api repos/noctisynth/semifold/releases --paginate \
+            --jq '.[] | select(.draft == false and .prerelease == false) | .tag_name | select(test("^semifold-v0\\.3\\.[0-9]+$"))' \
+            | sed 's/^semifold-v//' | sort -V | tail -n 1)"
+          test -n "$version"
+          echo "Selected Semifold $version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
       - name: Setup Semifold
         uses: noctisynth/setup-semifold@main
         with:
-          version: "0.3.4"
+          version: ${{ steps.semifold-version.outputs.version }}
       - name: Semifold CI
         run: semifold ci
         env:
