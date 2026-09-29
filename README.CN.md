@@ -37,7 +37,7 @@ acgdp game.7z.001 --ask-password
 
 帮助、解压进度和错误提示在终端中会使用颜色。重定向输出时可用 `--color always` 强制保留颜色，或用 `--color never` 禁用颜色；默认为 `auto`。
 
-默认使用 `--jobs 2`。外层为 7z、内层为非 solid RAR 时，另一工作线程可在内层文件仍在写入时解压已完整的 RAR 条目；其它布局在内层文件完整写出后开始。`--jobs 1` 使用串行流程。实际加速幅度取决于压缩包布局和存储设备。
+默认使用 `--jobs 2`，在每一层把已完成的内层压缩包交给下一层工作线程，因此多层嵌套也可连续重叠处理。外层为 7z、内层为非 solid RAR 时，下一层可在内层文件仍在写入时解压已完整的 RAR 条目；其它格式组合在内层文件完整写出后开始。`--jobs 1` 使用串行流程。`--jobs 2` 是启用流水线的模式，会按嵌套层数建立多个阶段，并不表示全程只有两个线程。实际加速幅度取决于压缩包布局和存储设备。
 
 ## 行为与限制
 
@@ -58,4 +58,4 @@ cargo bench --bench nested_extraction -- --noplot
 
 冒烟测试包含多层 ZIP、图片附加 ZIP/7z/RAR、RAR3/RAR5、加密 ZIP/7z，以及失败清理。7z 和加密 ZIP 样例需要本机安装 7-Zip；其余测试不依赖 7-Zip。`tests/fixtures` 下两个 RAR 样本来自 [RAR Test Files](https://github.com/ssokolow/rar-test-files)，按 CC0 发布。另一个用于验证符号链接拒绝行为的 RAR 样本来自 [libarchive 测试集](https://github.com/libarchive/libarchive/blob/master/libarchive/test/test_read_format_rar.rar.uu)。
 
-Criterion 基准对比 `--jobs 1` 与 `--jobs 2`，使用自动生成的多内层 ZIP 加大型普通文件、以及单链 ZIP 两类样本。测量结果和限制见[基准记录](.agents/spikes/0001-pipeline-benchmark.md)。真实分卷 7z→RAR5 样本的单次对照见[样本验证](.agents/spikes/0002-real-split-archive.md)；不同运行之间波动明显，不能保证所有文件都提速。
+Criterion 基准对比 `--jobs 1` 与 `--jobs 2`，使用自动生成的多内层 ZIP、单链 ZIP 和四层链样本。修改前后的可执行文件还可用 `python tests/compare_pipeline.py <旧版> <新版>` 交错对照。测量结果和限制见[基准记录](.agents/spikes/0001-pipeline-benchmark.md)。真实分卷 7z→RAR5 样本的单次对照见[样本验证](.agents/spikes/0002-real-split-archive.md)；不同运行之间波动明显，不能保证所有文件都提速。

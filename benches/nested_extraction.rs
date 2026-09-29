@@ -61,7 +61,32 @@ fn make_outer(path: &Path, inners: &[PathBuf], filler: Option<&[u8]>) {
 }
 
 fn binary() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_acgdp"))
+    std::env::var_os("ACGDP_BENCH_BIN")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_acgdp")))
+}
+
+fn make_chain_layer(path: &Path, child: &Path, child_name: &str, filler: &[u8]) {
+    let mut archive = ZipWriter::new(File::create(path).expect("create chain layer"));
+    archive
+        .start_file(
+            child_name,
+            SimpleFileOptions::default().compression_method(CompressionMethod::Stored),
+        )
+        .expect("start nested archive");
+    std::io::copy(
+        &mut File::open(child).expect("open nested archive"),
+        &mut archive,
+    )
+    .expect("write nested archive");
+    archive
+        .start_file(
+            format!("filler-{child_name}.bin"),
+            SimpleFileOptions::default().compression_method(CompressionMethod::Stored),
+        )
+        .expect("start filler");
+    archive.write_all(filler).expect("write filler");
+    archive.finish().expect("finish chain layer");
 }
 
 fn bench_nested(c: &mut Criterion) {
@@ -122,6 +147,42 @@ fn bench_nested(c: &mut Criterion) {
                 });
             });
         }
+    }
+
+    let leaf = fixtures.path().join("deep-leaf.zip");
+    make_inner(&leaf, "deep-result.bin", &content);
+    let third = fixtures.path().join("deep-third.zip");
+    make_chain_layer(&third, &leaf, "leaf.jpg", &content);
+    let second = fixtures.path().join("deep-second.zip");
+    make_chain_layer(&second, &third, "third.png", &content);
+    let deep = fixtures.path().join("deep-root.zip");
+    make_chain_layer(&deep, &second, "second.dat", &content);
+    for jobs in [1, 2] {
+        group.bench_with_input(BenchmarkId::new("four_layers", jobs), &jobs, |b, jobs| {
+            b.iter(|| {
+                let output = tempfile::tempdir().expect("output directory");
+                let destination = output.path().join("result");
+                let result = Command::new(binary())
+                    .arg(&deep)
+                    .arg("--jobs")
+                    .arg(jobs.to_string())
+                    .arg("-o")
+                    .arg(&destination)
+                    .output()
+                    .expect("run acgdp");
+                assert!(
+                    result.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&result.stderr)
+                );
+                assert_eq!(
+                    std::fs::metadata(destination.join("deep-result.bin"))
+                        .expect("result file")
+                        .len(),
+                    content.len() as u64
+                );
+            });
+        });
     }
     group.finish();
 }

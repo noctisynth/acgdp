@@ -63,10 +63,14 @@ pub(crate) fn run(color: ColorChoice) -> Result<()> {
         extract_one(&input, staging.path(), format, password.as_deref(), &budget)?;
         expand_nested(staging.path(), 1, &cli, password.as_deref(), &budget)?;
     } else {
-        pipeline_first_layer(
-            &input,
+        pipeline_layer(
+            LayerSource {
+                input: &input,
+                format,
+                progress: None,
+            },
             staging.path(),
-            format,
+            1,
             &cli,
             password.as_deref(),
             &budget,
@@ -81,6 +85,12 @@ pub(crate) fn run(color: ColorChoice) -> Result<()> {
 struct CompletedLayer {
     source: PathBuf,
     output: tempfile::TempDir,
+}
+
+struct LayerSource<'a> {
+    input: &'a Path,
+    format: crate::detect::Format,
+    progress: Option<&'a GrowingFile>,
 }
 
 enum WorkItem {
@@ -145,21 +155,27 @@ fn is_rar_signature(bytes: &[u8]) -> bool {
     bytes.starts_with(b"Rar!\x1A\x07\x00") || bytes.starts_with(b"Rar!\x1A\x07\x01\x00")
 }
 
-fn pipeline_first_layer(
-    input: &Path,
+fn pipeline_layer(
+    source: LayerSource<'_>,
     staging: &Path,
-    format: crate::detect::Format,
+    depth: usize,
     cli: &Cli,
     password: Option<&str>,
     budget: &Budget,
 ) -> Result<()> {
+    let LayerSource {
+        input,
+        format,
+        progress: source_progress,
+    } = source;
     let workspace = tempfile::Builder::new()
         .prefix(".acgdp-work-")
         .tempdir_in(staging.parent().context("无法确定临时目录父路径")?)?;
     let completed = thread::scope(|scope| -> Result<Vec<CompletedLayer>> {
         let (sender, receiver) = sync_channel(1);
-        let worker = scope
-            .spawn(|| process_completed_files(receiver, workspace.path(), cli, password, budget));
+        let worker = scope.spawn(|| {
+            process_completed_files(receiver, workspace.path(), depth, cli, password, budget)
+        });
         let growing = RefCell::new(HashMap::<PathBuf, Arc<GrowingFile>>::new());
         let probes = RefCell::new(HashMap::<PathBuf, RarProbe>::new());
         let mut on_file = |file: &Path| {
@@ -172,7 +188,9 @@ fn pipeline_first_layer(
                     .context("内层解压工作线程已停止")
             }
         };
-        let extraction = if let crate::detect::Format::SevenZ(offset) = format {
+        let extraction = if let Some(progress) = source_progress {
+            extract_growing_rar(input, staging, password, budget, progress, &mut on_file)
+        } else if let crate::detect::Format::SevenZ(offset) = format {
             extract_sevenz_with_progress(
                 input,
                 staging,
@@ -237,6 +255,7 @@ fn pipeline_first_layer(
 fn process_completed_files(
     receiver: Receiver<WorkItem>,
     workspace: &Path,
+    depth: usize,
     cli: &Cli,
     password: Option<&str>,
     budget: &Budget,
@@ -254,7 +273,7 @@ fn process_completed_files(
                 (file, crate::detect::Format::Rar, Some(progress))
             }
         };
-        if cli.max_depth <= 1 {
+        if depth >= cli.max_depth {
             bail!(
                 "达到 --max-depth={}，但仍有嵌套压缩包：{}",
                 cli.max_depth,
@@ -264,22 +283,20 @@ fn process_completed_files(
         let target = tempfile::Builder::new()
             .prefix(".acgdp-layer-")
             .tempdir_in(workspace)?;
-        cli::layer_started(cli.color, 2, &file, format);
-        if let Some(progress) = progress {
-            extract_growing_rar(
-                &file,
-                target.path(),
-                password,
-                budget,
-                &progress,
-                &mut |_| Ok(()),
-            )
-            .with_context(|| format!("流水线 RAR 解压失败：{}", file.display()))?;
-        } else {
-            extract_one(&file, target.path(), format, password, budget)
-                .with_context(|| format!("解压失败：{}", file.display()))?;
-        }
-        expand_nested(target.path(), 2, cli, password, budget)?;
+        cli::layer_started(cli.color, depth + 1, &file, format);
+        pipeline_layer(
+            LayerSource {
+                input: &file,
+                format,
+                progress: progress.as_deref(),
+            },
+            target.path(),
+            depth + 1,
+            cli,
+            password,
+            budget,
+        )
+        .with_context(|| format!("流水线解压失败：{}", file.display()))?;
         completed.push(CompletedLayer {
             source: file,
             output: target,

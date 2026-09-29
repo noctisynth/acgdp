@@ -75,6 +75,20 @@ try:
     run(outer, "--jobs", "1", "-o", base / "serial")
     assert (base / "serial" / "result.txt").read_bytes() == b"finished"
 
+    deep = base / "deep.zip"
+    deep.write_bytes(make_zip({"second.jpg": make_zip({
+        "third.png": make_zip({"fourth.dat": make_zip({"deep.txt": b"four layers"})}),
+    })}))
+    run(deep, "--jobs", "2")
+    assert (base / "deep.zip.extracted" / "deep.txt").read_bytes() == b"four layers"
+    run(deep, "--jobs", "1", "-o", base / "deep-serial")
+    assert (base / "deep-serial" / "deep.txt").read_bytes() == b"four layers"
+    deep_limit = subprocess.run(
+        [str(ACGDP), str(deep), "--max-depth", "3", "-o", str(base / "deep-too-shallow")],
+        capture_output=True,
+    )
+    assert deep_limit.returncode != 0 and not (base / "deep-too-shallow").exists()
+
     siblings = base / "siblings.zip"
     siblings.write_bytes(make_zip({
         "one.jpg": make_zip({"one.txt": b"one"}),
@@ -156,6 +170,10 @@ try:
         run(growing_outer)
         assert (base / "growing-rar.7z.extracted" / "testfile.txt").is_file()
         assert not (base / "growing-rar.7z.extracted" / "growing-rar.jpg").exists()
+        second_level = base / "second-level.zip"
+        second_level.write_bytes(make_zip({"inside.png": growing_outer.read_bytes()}))
+        run(second_level)
+        assert (base / "second-level.zip.extracted" / "testfile.txt").is_file()
         truncated = base / "growing-rar-truncated.7z"
         growing_data = growing_outer.read_bytes()
         truncated.write_bytes(growing_data[: len(growing_data) // 2])

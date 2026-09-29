@@ -30,7 +30,7 @@ pub(crate) struct Cli {
     /// 所有层累计最多写出的 GiB 数
     #[arg(long, default_value_t = 20)]
     pub(crate) max_gib: u64,
-    /// 并发工作数：1 为串行，2 为外层与内层并行
+    /// 解压模式：1 为串行，2 为各嵌套层建立流水线阶段
     #[arg(long, default_value_t = 2, value_parser = clap::value_parser!(u8).range(1..=2))]
     pub(crate) jobs: u8,
     /// 终端颜色
